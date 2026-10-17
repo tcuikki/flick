@@ -1,0 +1,4 @@
+# `npm run dev`（本物の Google ログイン・Workers AI を使うローカル開発）用。
+# このファイルを .dev.vars にコピーして値を入れる。.dev.vars は Git に入らない。
+GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=xxxxxxxx
