@@ -46,10 +46,10 @@ export async function serverTasks(page: Page) {
   return (await res.json()).tasks as { id: string; title: string; status: string; due_date: string | null; note: string }[];
 }
 
+/** ブラウザと同じ Asia/Tokyo の日付（CI の実行マシンは UTC なので、端末の時刻帯には頼らない） */
 export function isoDate(offsetDays: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const d = new Date(Date.now() + offsetDays * 86_400_000);
+  return d.toLocaleDateString("sv-SE", { timeZone: "Asia/Tokyo" });
 }
 
 /** ページで出たエラーを集める（各テストの最後に 0 件であることを確認） */
