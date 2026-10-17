@@ -340,11 +340,15 @@ test.describe("Google 認証", () => {
   });
 
   test("Google ボタンで Google の認可画面へ（PKCE + state 付き）", async ({ page }) => {
+    // 最初に出た認可リクエストだけを記録する（リダイレクト経由でも request イベントは必ず発火する）。
+    // Google 側の後続の通信（エラー報告など）で上書きされないようにする
     let authUrl = "";
-    await page.route("https://accounts.google.com/**", async (route) => {
-      authUrl = route.request().url();
-      await route.fulfill({ status: 200, contentType: "text/html", body: "<title>google</title>" });
+    page.on("request", (req) => {
+      if (!authUrl && req.url().includes("accounts.google.com/o/oauth2/v2/auth")) authUrl = req.url();
     });
+    await page.context().route("https://accounts.google.com/**", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<title>google</title>" }),
+    );
     await page.goto("/");
     await ready(page);
     await page.getByTestId("google-login").tap();
