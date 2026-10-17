@@ -30,7 +30,21 @@ function parseResponse(raw: any): any {
 
 export type Enriched = { title: string; due_date: string | null; ai: boolean };
 
-/** メモ → 短いタスク名 + 期限日 */
+/**
+ * 打った文から「期限の言葉」だけを文字どおり取り除いてタスク名にする。
+ * AI にタイトルを書き直させると漢字が別の字に化けることがあったため、
+ * AI には取り除く言葉を答えさせるだけにして、文字の書き換えは一切させない。
+ * 言葉が文中にそのまま見つからない・長すぎる・取り除くと空になる場合は、打った文をそのまま使う。
+ */
+export function stripDuePhrase(text: string, phrase: unknown): string {
+  if (typeof phrase !== "string") return text;
+  const p = phrase.trim();
+  if (!p || p.length > 24 || !text.includes(p)) return text;
+  const title = text.replace(p, "").replace(/^[\s、，,・:：]+|[\s、，,・:：]+$/g, "").trim();
+  return title || text;
+}
+
+/** メモ → タスク名（打った文から期限の言葉を除いたもの）+ 期限日 */
 export async function enrichMemo(env: Env, text: string, today: string): Promise<Enriched> {
   if (env.E2E === "1") return mockEnrich(text, today);
   const weekday = WEEK[new Date(`${today}T00:00:00Z`).getUTCDay()];
@@ -40,10 +54,11 @@ export async function enrichMemo(env: Env, text: string, today: string): Promise
         {
           role: "system",
           content:
-            `あなたはタスク管理アプリの入力整理係です。ユーザーのメモから「タスク名」と「期限日」を取り出します。\n` +
+            `あなたはタスク管理アプリの入力整理係です。ユーザーのメモから「期限を表す言葉」と「期限日」を取り出します。\n` +
             `今日は ${today}（${weekday}曜日）です。\n` +
-            `- due_date: 期限や日付の言及があれば YYYY-MM-DD。なければ null。\n` +
-            `- title: 元の言葉をできるだけ残し、期限表現（「明日までに」など）だけを除いた簡潔なタスク名。情報を足さない。言語は入力と同じ。`,
+            `- due_phrase: メモの中で期限を表している部分（「明日までに」「10月25日までに」「金曜中に」など、後ろの助詞も含む）を、メモから1文字も変えずにそのまま抜き出す。期限の言及がなければ null。\n` +
+            `- due_date: 期限日を YYYY-MM-DD で。期限の言及がなければ null。\n` +
+            `タスク名を書き直したり、要約したりしないこと。`,
         },
         { role: "user", content: text },
       ],
@@ -52,18 +67,20 @@ export async function enrichMemo(env: Env, text: string, today: string): Promise
         json_schema: {
           type: "object",
           properties: {
-            title: { type: "string" },
+            due_phrase: { type: ["string", "null"] },
             due_date: { type: ["string", "null"] },
           },
-          required: ["title", "due_date"],
+          required: ["due_phrase", "due_date"],
         },
       },
-      max_tokens: 200,
+      max_tokens: 120,
       temperature: 0,
     } as any);
     const j = parseResponse(raw);
-    const title = typeof j?.title === "string" && j.title.trim() ? j.title.trim().slice(0, 500) : text;
-    return { title, due_date: isRealDate(j?.due_date) ? j.due_date : null, ai: true };
+    const due_date = isRealDate(j?.due_date) ? j.due_date : null;
+    // 期限が読み取れたときだけ、期限の言葉を取り除く
+    const title = due_date ? stripDuePhrase(text, j?.due_phrase) : text;
+    return { title: title.slice(0, 500), due_date, ai: true };
   } catch (e) {
     console.warn("enrich failed", e);
     return { title: text, due_date: null, ai: false };
@@ -106,14 +123,16 @@ export async function breakdownTask(env: Env, title: string, note: string): Prom
   }
 }
 
-/** E2E 用の決定的なモック（本番では使われない） */
+/** E2E 用の決定的なモック（本番では使われない）。タイトルは本番と同じ stripDuePhrase で作る */
 function mockEnrich(text: string, today: string): Enriched {
-  const rules: [RegExp, number][] = [[/明後日|あさって/, 2], [/明日|あした/, 1], [/今日|きょう/, 0]];
+  const rules: [RegExp, number][] = [
+    [/(明後日|あさって)(までに|まで|中に)?/, 2],
+    [/(明日|あした)(までに|まで|中に)?/, 1],
+    [/(今日|きょう)(までに|まで|中に)?/, 0],
+  ];
   for (const [re, n] of rules) {
-    if (re.test(text)) {
-      const title = text.replace(re, "").replace(/^(まで(に)?|中に)\s*/, "").replace(/\s*(まで(に)?)$/, "").trim() || text;
-      return { title, due_date: addDays(today, n), ai: true };
-    }
+    const m = text.match(re);
+    if (m) return { title: stripDuePhrase(text, m[0]), due_date: addDays(today, n), ai: true };
   }
   return { title: text, due_date: null, ai: true };
 }
