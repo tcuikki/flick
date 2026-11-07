@@ -45,6 +45,8 @@ export function evColor(ev: Pick<CalEvent, "colorId" | "color" | "calendarId">, 
 export type CalSource = { email: string; status: "ok" | "expired" } | null;
 
 type State = {
+  /** 予定を書き換えるたびに増える（1か月の表示が読み直すため） */
+  version: number;
   /** undefined = まだ読み込んでいない */
   source: CalSource | undefined;
   calendars: CalInfo[];
@@ -62,7 +64,7 @@ function loadCache(): Partial<State> {
   return {};
 }
 
-let state: State = { source: undefined, calendars: [], days: {}, loading: {}, failed: {}, ...loadCache() };
+let state: State = { version: 0, source: undefined, calendars: [], days: {}, loading: {}, failed: {}, ...loadCache() };
 const listeners = new Set<() => void>();
 const set = (p: Partial<State>) => {
   state = { ...state, ...p };
@@ -86,7 +88,7 @@ function saveCache() {
 
 export function clearCalCache() {
   try { localStorage.removeItem(CACHE); } catch { /* noop */ }
-  set({ source: undefined, calendars: [], days: {}, loading: {}, failed: {} });
+  set({ version: 0, source: undefined, calendars: [], days: {}, loading: {}, failed: {} });
 }
 
 /* ---------- 日付と時刻 ---------- */
@@ -183,6 +185,19 @@ export async function loadDay(date: string) {
   }
 }
 
+/** 何日か分をまとめて読む（1か月の表示用）。日ごとに分けて、1日の表示とも共有する */
+export async function loadRange(from: string, n: number) {
+  try {
+    const r = await api<{ source: CalSource; calendars: CalInfo[]; events: CalEvent[] }>(`/api/cal/events?date=${from}&days=${n}`);
+    const days = { ...state.days };
+    for (let i = 0; i < n; i++) {
+      const d = shiftDate(from, i);
+      days[d] = eventsOn(r.events, d);
+    }
+    set({ source: r.source, calendars: r.calendars.length ? r.calendars : state.calendars, days });
+  } catch { /* オフラインなど。手元にある分だけ出す */ }
+}
+
 /** 変更した予定がかかる日を読み直す */
 function touchedDays(...evs: (Pick<CalEvent, "start" | "end" | "allDay"> | undefined)[]) {
   const ds = new Set<string>();
@@ -205,7 +220,7 @@ export async function createEvent(input: EventInput): Promise<CalEvent> {
   try {
     const r = await api<{ event: CalEvent }>("/api/cal/events", { method: "POST", body: input });
     const d = input.start.slice(0, 10);
-    set({ days: { ...state.days, [d]: [...(state.days[d] ?? []), r.event] } });
+    set({ days: { ...state.days, [d]: [...(state.days[d] ?? []), r.event] }, version: state.version + 1 });
     touchedDays(r.event).forEach((x) => void loadDay(x));
     return r.event;
   } catch (e) {
@@ -222,6 +237,7 @@ export async function updateEvent(ev: CalEvent, input: EventInput): Promise<void
   if (!(state.days[d] ?? []).some((x) => x.id === ev.id)) set({ days: { ...state.days, [d]: [...(state.days[d] ?? []), next] } });
   try {
     await api(`/api/cal/events/${encodeURIComponent(ev.calendarId)}/${encodeURIComponent(ev.id)}`, { method: "PATCH", body: input });
+    set({ version: state.version + 1 });
     touchedDays(ev, next).forEach((x) => void loadDay(x));
   } catch (e) {
     set({ days: before });
@@ -235,6 +251,7 @@ export async function deleteEvent(ev: CalEvent): Promise<void> {
   applyLocal((list) => list.filter((x) => !(x.id === ev.id && x.calendarId === ev.calendarId)));
   try {
     await api(`/api/cal/events/${encodeURIComponent(ev.calendarId)}/${encodeURIComponent(ev.id)}`, { method: "DELETE" });
+    set({ version: state.version + 1 });
     saveCache();
   } catch (e) {
     set({ days: before });

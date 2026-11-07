@@ -18,8 +18,9 @@ type Form = {
 function initialForm(d: EventDraft, defaultCal: string): Form {
   if (d.mode === "new") {
     const s = atMinutes(d.date, d.startMin);
-    const e = atMinutes(d.date, Math.min(d.startMin + 60, 1439));
-    return { title: "", allDay: false, date: d.date, endDate: d.date, startTime: s.slice(11), endTime: e.slice(11), location: "", description: "", calendarId: defaultCal, colorId: "" };
+    // 1時間の予定。夜遅くなら日をまたいでよい（23:30〜翌0:30）
+    const e = atMinutes(d.date, d.startMin + 60);
+    return { title: "", allDay: false, date: d.date, endDate: e.slice(0, 10), startTime: s.slice(11), endTime: e.slice(11), location: "", description: "", calendarId: defaultCal, colorId: "" };
   }
   const ev = d.ev;
   return {
@@ -115,7 +116,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
     <AnimatePresence>
       {draft && form && (
         <>
-          <motion.div key="scrim" className="scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+          <motion.div key="scrim" className="scrim event-scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
           <motion.section
             key="sheet"
             className="sheet glass event-sheet"
@@ -183,9 +184,10 @@ export function EventSheet({ draft, onClose, toast }: Props) {
                             if (!v) return;
                             // 開始をずらしたら、長さを保ったまま終わりも動かす
                             const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
-                            const len = Math.max(15, toMin(form.endTime) - toMin(form.startTime));
-                            const endMin = Math.min(toMin(v) + len, 1439);
-                            up({ startTime: v, endTime: atMinutes(form.date, endMin).slice(11) });
+                            const days = Math.round((Date.parse(form.endDate) - Date.parse(form.date)) / 86_400_000);
+                            const len = Math.max(15, days * 1440 + toMin(form.endTime) - toMin(form.startTime));
+                            const end = atMinutes(form.date, toMin(v) + len);
+                            up({ startTime: v, endTime: end.slice(11), endDate: end.slice(0, 10) });
                           }} />
                       </label>
                     )}

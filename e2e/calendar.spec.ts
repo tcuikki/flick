@@ -316,6 +316,159 @@ test.describe("今日（Google カレンダー）", () => {
     await expect(page.getByTestId("day-nav")).toContainText("昨日");
   });
 
+  test("時間割を横にスワイプして日付を動かせる（左へ払うと次の日、右へ払うと前の日）。縦はふつうにスクロール", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    await add(page, "明日の面接", isoDate(1), "10:00", "11:00");
+    await page.goto("/");
+    await ready(page);
+    await expect(page.getByTestId("day-empty")).toBeVisible();
+    const box = (await page.getByTestId("timeline-scroll").boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const cdp = await page.context().newCDPSession(page);
+    const drag = async (dx: number, dy: number, steps = 10, stepMs = 12) => {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: cx, y: cy }] });
+      for (let i = 1; i <= steps; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cx + (dx * i) / steps, y: cy + (dy * i) / steps }] });
+        await page.waitForTimeout(stepMs);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    };
+
+    // 左へ払う → 明日
+    await drag(-160, 6);
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", isoDate(1));
+    await expect(page.getByTestId("day-nav")).toContainText("明日");
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", isoDate(1));
+    await expect(ev(page, "明日の面接")).toBeVisible();
+    await expect(page.getByTestId("event-sheet")).toHaveCount(0); // 払っただけでは予定の追加は開かない
+
+    // 右へ2回払う → 昨日
+    const tl = page.getByTestId("timeline");
+    await drag(160, -4);
+    await expect(tl).toHaveAttribute("data-date", isoDate(0));
+    await drag(160, 0);
+    await expect(tl).toHaveAttribute("data-date", isoDate(-1));
+    await expect(page.getByTestId("day-nav")).toContainText("昨日");
+
+    // 少しだけゆっくり動かしたときは変わらず、元の位置に戻る
+    await drag(-40, 0, 10, 60);
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("day-nav")).toContainText("昨日");
+    expect(await page.locator(".tl-drag").evaluate((e) => getComputedStyle(e).transform)).toBe("none");
+
+    // 縦に動かすとスクロールするだけで、日付は変わらない
+    const top0 = await page.getByTestId("timeline-scroll").evaluate((e) => e.scrollTop);
+    await drag(8, -200);
+    await page.waitForTimeout(400);
+    await expect(page.getByTestId("day-nav")).toContainText("昨日");
+    expect(await page.getByTestId("timeline-scroll").evaluate((e) => e.scrollTop)).toBeGreaterThan(top0 + 50);
+
+    // 矢印もそのまま使える
+    await page.getByTestId("day-next").tap();
+    await expect(page.getByTestId("day-nav")).toContainText("今日");
+    await cdp.detach();
+  });
+
+  test("下のタブの「今日」を押すと、明日などを見ていても今日の時間割に戻る", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("day-next").tap();
+    await page.getByTestId("day-next").tap();
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", isoDate(2));
+    await page.getByTestId("nav-today").tap();
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", isoDate(0));
+    await expect(page.getByTestId("day-nav")).toContainText("今日");
+    // ほかのページから戻ったときも今日
+    await page.getByTestId("day-prev").tap();
+    await page.getByTestId("nav-mail").tap();
+    await page.getByTestId("nav-today").tap();
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", isoDate(0));
+  });
+
+  test("右上のボタンで1か月のカレンダー。日を押すとその日の予定が出て、そこから変更・追加できる", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    // 今月の中の日（月末でも次の月にはみ出さないように）
+    const day = isoDate(2).slice(0, 7) === isoDate(0).slice(0, 7) ? isoDate(2) : isoDate(-2);
+    await add(page, "ゼミ", day, "13:00", "14:30", { colorId: "3" });
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("month-open").tap();
+    const view = page.getByTestId("month-view");
+    await expect(view).toBeVisible();
+    const [y, m] = isoDate(0).split("-").map(Number);
+    await expect(page.getByTestId("month-title")).toHaveText(`${y}年${m}月`);
+    await expect(page.locator(".fabs")).toHaveCSS("opacity", "0"); // 1か月の表示の間は ＋ とタブを隠す
+    // 予定はその日のマスに出る
+    const cell = (d: string) => page.locator(`[data-testid=month-cell][data-date="${d}"]`);
+    await expect(cell(day)).toContainText("ゼミ");
+    // 日を押すと、その日の予定が下に出る
+    await cell(day).tap();
+    await expect(page.getByTestId("month-day").getByTestId("month-event")).toHaveText(["13:00ゼミ"]);
+    // 予定を押すと、1か月の表示の上で予定のシートが開き、変更できる
+    await page.getByTestId("month-day").getByTestId("month-event").tap();
+    await expect(page.getByTestId("event-sheet")).toBeVisible();
+    const sheetBox = (await page.getByTestId("event-save").boundingBox())!;
+    const onTop = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-testid=event-sheet]") !== null, { x: sheetBox.x + 10, y: sheetBox.y + 10 });
+    expect(onTop).toBe(true);
+    await page.getByTestId("event-title").fill("ゼミ（発表）");
+    await page.getByTestId("event-save").tap();
+    await expect(page.getByTestId("event-sheet")).toHaveCount(0);
+    await expect(cell(day)).toContainText("ゼミ（発表）");
+    expect((await serverEvents(page, day))[0]).toMatchObject({ title: "ゼミ（発表）" });
+    // ＋ でその日に追加
+    await page.getByTestId("month-add").tap();
+    await expect(page.getByTestId("event-date")).toHaveValue(day);
+    await page.getByTestId("event-title").fill("ジム");
+    await page.getByTestId("event-save").tap();
+    await expect(page.getByTestId("month-day").getByTestId("month-event")).toHaveCount(2);
+    await expect(cell(day)).toContainText("ジム");
+    // 次の月へ（矢印）。戻る
+    await page.getByTestId("month-next").tap();
+    const next = new Date(y, m, 1);
+    await expect(page.getByTestId("month-title")).toHaveText(`${next.getFullYear()}年${next.getMonth() + 1}月`);
+    await page.getByTestId("month-today").tap();
+    await expect(page.getByTestId("month-title")).toHaveText(`${y}年${m}月`);
+    // 「時間割で見る」で、その日の時間割へ
+    await cell(day).tap();
+    await page.getByTestId("month-open-day").tap();
+    await expect(view).toHaveCount(0);
+    await expect(page.getByTestId("timeline")).toHaveAttribute("data-date", day);
+    await expect(ev(page, "ゼミ（発表）")).toBeVisible();
+  });
+
+  test("1か月のカレンダーは横にスワイプしても月を動かせる。× で閉じる", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    await page.goto("/");
+    await ready(page);
+    await expect(page.getByTestId("month-open")).toBeVisible();
+    await page.getByTestId("month-open").tap();
+    const [y, m] = isoDate(0).split("-").map(Number);
+    const box = (await page.getByTestId("month-grid").boundingBox())!;
+    const cdp = await page.context().newCDPSession(page);
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: cx, y: cy }] });
+    for (let i = 1; i <= 10; i++) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cx + 16 * i, y: cy }] });
+      await page.waitForTimeout(12);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.detach();
+    const prev = new Date(y, m - 2, 1);
+    await expect(page.getByTestId("month-title")).toHaveText(`${prev.getFullYear()}年${prev.getMonth() + 1}月`);
+    await page.getByTestId("month-close").tap();
+    await expect(page.getByTestId("month-view")).toHaveCount(0);
+    await expect(page.locator(".fabs")).toHaveCSS("opacity", "1");
+    // カレンダーをつないでいないときや、ほかのページではボタンを出さない
+    await page.getByTestId("nav-tasks").tap();
+    await expect(page.getByTestId("month-open")).toHaveCount(0);
+  });
+
   test("許可が切れたら「つなぎ直す」を出す", async ({ page }) => {
     await login(page);
     await connect(page, { token: "expired" });

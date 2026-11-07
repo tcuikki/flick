@@ -550,3 +550,55 @@ html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 .plan-tilde { color: var(--ink-3); font-weight: 700; }
 .plan-color { height: 24px; padding: 0 10px 0 6px; border-radius: 12px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 800; color: var(--ink); background: color-mix(in srgb, var(--c) 14%, #fff); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
 .plan-color i { width: 12px; height: 12px; border-radius: 50%; background: var(--c); }
+
+/* 時間割を横にスワイプして日付を動かす */
+.tl-scroll { touch-action: pan-y; }
+.tl-drag { transition: transform 0.35s var(--spring), opacity 0.25s; will-change: transform; }
+.tl-drag.dragging { transition: none; }
+
+/* 1か月の予定（右上のカレンダーのボタン） */
+.month-btn { position: relative; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); }
+.month-btn-day { position: absolute; left: 0; right: 0; top: 17px; text-align: center; font-size: 8.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
+html.month-open .fabs, html.month-open .tabs { opacity: 0; pointer-events: none; transform: translateY(30px); transition: transform 0.35s var(--spring), opacity 0.25s; }
+.event-scrim { z-index: 60; }
+.sheet.event-sheet { z-index: 61; }
+.month-view { position: fixed; inset: 0; z-index: 55; background: var(--bg); overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; }
+.month-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px;
+  padding: calc(var(--safe-t) + 10px) 14px 10px; --glass-fill: rgba(247, 248, 251, 0.8); border-radius: 0 0 24px 24px;
+}
+.month-head h2 { margin: 0 4px; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.month-close { margin-left: auto; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 24px; line-height: 1; color: var(--ink); background: rgba(118, 118, 128, 0.12); }
+.month-body { max-width: 620px; width: 100%; margin: 0 auto; padding: 10px 10px calc(var(--safe-b) + 24px); }
+.month-week { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 11.5px; font-weight: 700; color: var(--ink-2); padding: 0 0 6px; }
+.month-week .sun, .month-num.sun { color: var(--red); }
+.month-week .sat, .month-num.sat { color: var(--blue); }
+.month-grid-wrap { position: relative; touch-action: pan-y; }
+.month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; background: transparent; }
+.month-cell {
+  min-width: 0; height: 74px; padding: 4px 3px; border-radius: 10px; background: var(--card); box-shadow: 0 0 0 0.5px var(--sep);
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px; text-align: left; overflow: hidden;
+}
+.month-cell.out { opacity: 0.4; }
+.month-cell.sel { box-shadow: 0 0 0 2px var(--blue); }
+.month-num { align-self: center; min-width: 20px; height: 20px; border-radius: 10px; display: grid; place-items: center; font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.month-cell.today .month-num { color: #fff; background: var(--red); }
+.month-ev {
+  display: block; font-style: normal; font-size: 9.5px; font-weight: 700; line-height: 1.35; padding: 0 3px; border-radius: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+  color: color-mix(in srgb, var(--ev) 70%, #000); background: color-mix(in srgb, var(--ev) 18%, #fff);
+}
+.month-more { font-style: normal; font-size: 9.5px; font-weight: 700; color: var(--ink-2); padding: 0 3px; }
+.month-day { margin-top: 14px; background: var(--card); border-radius: 22px; box-shadow: var(--card-shadow); padding: 12px 12px 8px; }
+.month-day-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; }
+.month-day-head strong { font-size: 16px; font-weight: 800; }
+.month-open-day { margin-left: auto; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 12.5px; font-weight: 800; color: var(--blue); background: rgba(0, 122, 255, 0.1); }
+.month-add { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: var(--blue); box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3); }
+.month-empty { margin: 4px 4px 8px; font-size: 13px; color: var(--ink-2); }
+.month-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.month-item {
+  width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ev) 13%, #fff); box-shadow: inset 3px 0 0 var(--ev);
+}
+.month-item-time { flex: none; min-width: 44px; font-size: 12.5px; font-weight: 700; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.month-item-title { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in srgb, var(--ev) 55%, #000); }

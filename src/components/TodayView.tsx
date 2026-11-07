@@ -12,6 +12,8 @@ const HOUR = 56; // 1時間の高さ(px)
 const EMPTY: CalEvent[] = [];
 
 type Props = {
+  /** 下のタブの「今日」が押されるたびに増える。今日の今の時刻の位置まで戻す */
+  jump: number;
   /** 見ている日（App が持つ。右下の ＋ とマイクで、この日の予定を入れる） */
   date: string;
   setDate: (d: string) => void;
@@ -21,7 +23,7 @@ type Props = {
 };
 
 /** 今日：新着メールのお知らせ + Google カレンダーの1日（縦の時間割） */
-export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) {
+export function TodayView({ jump, date, setDate, unread, onOpenMail, onEdit }: Props) {
   const [dir, setDir] = useState(0);
   const source = useCal((s) => s.source);
   const calendars = useCal((s) => s.calendars);
@@ -62,6 +64,64 @@ export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) 
 
   /* ---------- 時間割の高さ：画面の下まで（中だけスクロールする） ---------- */
   const scroller = useRef<HTMLDivElement>(null);
+
+  /* ---------- 時間割を横にスワイプして日付を動かす（左へ払うと次の日、右へ払うと前の日） ---------- */
+  const [dragX, setDragX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const swiped = useRef(false); // 払った直後のタップで予定の追加が開かないように
+  const goRef = useRef(go);
+  goRef.current = go;
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let x0 = 0, y0 = 0, t0 = 0, dx = 0;
+    let mode: "h" | "v" | null = null;
+    let active = false;
+    const start = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { active = false; return; }
+      active = true; mode = null; dx = 0;
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = performance.now();
+    };
+    const move = (e: TouchEvent) => {
+      if (!active) return;
+      const mx = e.touches[0].clientX - x0;
+      const my = e.touches[0].clientY - y0;
+      if (!mode && (Math.abs(mx) > 10 || Math.abs(my) > 10)) {
+        mode = Math.abs(mx) > Math.abs(my) * 1.2 ? "h" : "v";
+        if (mode === "h") setDragging(true);
+      }
+      if (mode !== "h") return;
+      e.preventDefault(); // 横に払っている間は縦にスクロールさせない
+      dx = mx;
+      setDragX(mx * 0.9);
+    };
+    const end = () => {
+      if (!active) return;
+      active = false;
+      if (mode !== "h") return;
+      const v = Math.abs(dx) / Math.max(1, performance.now() - t0);
+      if (Math.abs(dx) > 70 || (Math.abs(dx) > 30 && v > 0.45)) {
+        swiped.current = true;
+        setTimeout(() => { swiped.current = false; }, 350);
+        goRef.current(dx < 0 ? 1 : -1);
+        setDragX(0); // 次の日の時間割が横から入ってくる（ここは戻す動きを見せない）
+        requestAnimationFrame(() => requestAnimationFrame(() => setDragging(false)));
+      } else {
+        setDragging(false);
+        setDragX(0); // 少しだけなら元に戻す
+      }
+    };
+    el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchmove", move, { passive: false });
+    el.addEventListener("touchend", end);
+    el.addEventListener("touchcancel", end);
+    return () => {
+      el.removeEventListener("touchstart", start);
+      el.removeEventListener("touchmove", move);
+      el.removeEventListener("touchend", end);
+      el.removeEventListener("touchcancel", end);
+    };
+  }, [source]);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -88,7 +148,18 @@ export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) 
     el.scrollTo({ top: Math.max(0, (target / 60) * HOUR), behavior: first ? "auto" : "smooth" });
   }, [date, loaded, placed, isToday, nowMin]);
 
+  // 下のタブの「今日」を押したら、今の時刻の位置へ（日付は App が今日に戻す）
+  const lastJump = useRef(jump);
+  useEffect(() => {
+    if (lastJump.current === jump) return;
+    lastJump.current = jump;
+    const el = scroller.current;
+    const n = new Date();
+    if (el) el.scrollTo({ top: Math.max(0, ((n.getHours() * 60 + n.getMinutes() - 90) / 60) * HOUR), behavior: "smooth" });
+  }, [jump]);
+
   const onTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (swiped.current) return;
     if ((e.target as HTMLElement).closest(".tl-event")) return;
     if (!source || source.status !== "ok") return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -186,7 +257,18 @@ export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) 
           )}
 
           <div className="tl-scroll" ref={scroller} data-testid="timeline-scroll">
-            <div className="timeline" style={{ height: 24 * HOUR }} onClick={onTimelineClick} data-testid="timeline">
+            <div className={`tl-drag ${dragging ? "dragging" : ""}`} style={{ transform: dragX ? `translateX(${dragX}px)` : undefined, opacity: dragX ? Math.max(0.55, 1 - Math.abs(dragX) / 500) : undefined }}>
+            <motion.div
+              key={date}
+              className="timeline"
+              style={{ height: 24 * HOUR }}
+              onClick={onTimelineClick}
+              data-testid="timeline"
+              data-date={date}
+              initial={dir ? { x: dir * 56, opacity: 0.3 } : false}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ type: "spring", stiffness: 420, damping: 36 }}
+            >
               {Array.from({ length: 24 }, (_, h) => (
                 <div key={h} className="tl-hour" style={{ top: h * HOUR }}>
                   <span>{h === 0 ? "" : `${h}:00`}</span>
@@ -236,6 +318,7 @@ export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) 
                   <i />
                 </div>
               )}
+            </motion.div>
             </div>
           </div>
           {loaded && events.length === 0 && (

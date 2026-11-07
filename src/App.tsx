@@ -15,10 +15,11 @@ import { AiSheet } from "./components/AiSheet";
 import { MailView } from "./components/MailView";
 import { TodayView } from "./components/TodayView";
 import { EventSheet, type EventDraft } from "./components/EventSheet";
+import { MonthView } from "./components/MonthView";
 import { SLOTS, SLOT_LABEL, autoCheck, loadMail, useMail } from "./mail";
 import { clearCalCache, loadDay, today, useCal } from "./calendar";
 import { primeKeyboard } from "./focus";
-import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
+import { Calendar, Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
 type Toast = { id: number; text: string; undo?: () => void };
 const MIN_SKELETON_MS = 450;
@@ -45,6 +46,8 @@ export function App() {
   const [eventDraft, setEventDraft] = useState<EventDraft | null>(null);
   // 「今日」のページで見ている日（右下の ＋ とマイクは、この日の予定を入れる）
   const [calDate, setCalDate] = useState(today);
+  const [todayJump, setTodayJump] = useState(0);
+  const [monthOpen, setMonthOpen] = useState(false);
   const calOk = useCal((c) => c.source?.status === "ok");
   const [booted, setBooted] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -59,6 +62,8 @@ export function App() {
   const unread = useMemo(() => mailItems.filter((m) => !m.read), [mailItems]);
 
   const goPage = useCallback((p: Page) => {
+    // 下のタブの「今日」を押したら、時間割を今日（今の時刻）に戻す
+    if (p === "today") { setCalDate(today()); setTodayJump((n) => n + 1); }
     setPageState((cur) => {
       if (cur !== p) {
         setPageDir(Math.sign(PAGES.indexOf(p) - PAGES.indexOf(cur)));
@@ -348,6 +353,24 @@ export function App() {
               </motion.span>
             )}
           </AnimatePresence>
+          <AnimatePresence>
+            {auth === "in" && page === "today" && calOk && (
+              <motion.button
+                key="month"
+                className="month-btn glass"
+                whileTap={{ scale: 0.9 }}
+                initial={{ scale: 0.6, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.6, opacity: 0 }}
+                onClick={() => { haptic("light"); setMonthOpen(true); }}
+                aria-label="1か月の予定"
+                data-testid="month-open"
+              >
+                <Calendar size={20} />
+                <span className="month-btn-day">{Number(today().slice(8))}</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
           {auth === "in" && user && (
             <motion.button className="avatar glass" whileTap={{ scale: 0.9 }} onClick={() => setMenu((m) => !m)} aria-label="アカウント" data-testid="avatar">
               {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : <span>{(user.name || user.email).slice(0, 1).toUpperCase()}</span>}
@@ -421,7 +444,7 @@ export function App() {
               transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
               {page === "today" && (
-                <TodayView date={calDate} setDate={setCalDate} unread={unread} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
+                <TodayView jump={todayJump} date={calDate} setDate={setCalDate} unread={unread} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
               )}
               {page === "mail" && <MailView active toast={showToast} />}
               {page === "tasks" && (
@@ -482,6 +505,13 @@ export function App() {
         baseDate={calDate}
         onClose={closeAsk}
         onAdded={page === "today" ? onAiEventsAdded : onAiAdded}
+      />
+      <MonthView
+        open={monthOpen}
+        initialDate={calDate}
+        onClose={() => setMonthOpen(false)}
+        onEdit={setEventDraft}
+        onPickDay={(d) => { setCalDate(d); setMonthOpen(false); }}
       />
       <EventSheet draft={eventDraft} onClose={closeEvent} toast={showToast} />
 

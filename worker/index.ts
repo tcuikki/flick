@@ -512,7 +512,8 @@ app.get("/cal/connect", (c) => {
 
 app.get("/cal/events", async (c) => {
   const date = String(c.req.query("date") ?? "");
-  const days = Math.min(7, Math.max(1, Number(c.req.query("days") ?? 1) || 1));
+  // 1か月の表示（6週間 = 42日）まで
+  const days = Math.min(42, Math.max(1, Number(c.req.query("days") ?? 1) || 1));
   if (!DATE.test(date)) return c.json({ error: "invalid_date" }, 400);
   return c.json(await eventsForDay(c.env, c.get("user").id, date, days));
 });

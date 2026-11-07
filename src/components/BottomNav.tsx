@@ -9,7 +9,8 @@ const ICON: Record<Page, (p: { size?: number }) => React.JSX.Element> = { today:
 
 type Props = { value: Page; onChange: (p: Page) => void; mailBadge: number; mailWarn: boolean; taskCount: number };
 
-/** 下部に浮くガラスのタブ（今日・メール・タスク）。選択中のレンズが液体のように伸びて移動する */
+/** 下部に浮くガラスのタブ（今日・メール・タスク）。選択中のレンズが液体のように伸びて移動する。
+ * 選んでいるタブをもう一度押したときも onChange を呼ぶ（「今日」なら今日の日付に戻す） */
 export function BottomNav({ value, onChange, mailBadge, mailWarn, taskCount }: Props) {
   return (
     <motion.nav
@@ -31,7 +32,7 @@ export function BottomNav({ value, onChange, mailBadge, mailWarn, taskCount }: P
             data-testid={`nav-${p}`}
             className={`tab nav-${p} ${on ? "on" : ""}`}
             whileTap={{ scale: 0.9 }}
-            onClick={() => { if (!on) { haptic(); onChange(p); } }}
+            onClick={() => { haptic(); onChange(p); }}
           >
             {on && <motion.span layoutId="tab-lens" className="tab-lens" transition={{ type: "spring", stiffness: 460, damping: 30, mass: 0.8 }} />}
             <span className="tab-icon">
