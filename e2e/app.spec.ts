@@ -1,5 +1,5 @@
 import { test, expect, devices } from "@playwright/test";
-import { ORIGIN, addMemo, card, collectErrors, flick, isoDate, login, quickFlick, ready, serverTasks } from "./helpers";
+import { ORIGIN, addMemo, card, collectErrors, flick, gotoTasks, isoDate, login, quickFlick, ready, serverTasks } from "./helpers";
 
 let errors: string[] = [];
 test.beforeEach(({ page }) => {
@@ -23,15 +23,16 @@ test.describe("＋ボタンで追加", () => {
     for (const l of sheets) expect(l).toContain('media="print"');
   });
 
-  test("＋は右下（タブの「完了」の上）にある丸いボタン", async ({ page }) => {
+  test("＋は右下（下のタブの「タスク」の上）にある丸いボタン。「今日」でも「タスク」でも使える", async ({ page }) => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await expect(page.getByTestId("page-today")).toBeVisible();
     const fab = (await page.getByTestId("add").boundingBox())!;
-    const done = (await page.getByTestId("tab-done").boundingBox())!;
+    const tasks = (await page.getByTestId("nav-tasks").boundingBox())!;
     expect(Math.abs(fab.width - fab.height)).toBeLessThan(1);
-    expect(fab.y + fab.height).toBeLessThan(done.y); // 完了タブより上
-    expect(fab.x + fab.width / 2).toBeGreaterThan(done.x); // 完了タブの列
+    expect(fab.y + fab.height).toBeLessThan(tasks.y); // タスクのタブより上
+    expect(fab.x + fab.width / 2).toBeGreaterThan(tasks.x); // タスクのタブの列
     const radius = await page.getByTestId("add").evaluate((el) => getComputedStyle(el).borderRadius);
     expect(radius).toBe("50%");
   });
@@ -50,8 +51,9 @@ test.describe("＋ボタンで追加", () => {
     await page.getByTestId("new-note").fill("面接の前に");
     await page.getByTestId("new-add").tap();
     await expect(sheet).toHaveCount(0);
-    // 進行中で追加したので、進行中タブに切り替わって表示される
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("進行中");
+    // 進行中で追加したので、タスクのページの「進行中」に切り替わって表示される
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("タスク");
+    await expect(page.getByTestId("tab-doing")).toHaveAttribute("aria-selected", "true");
     await expect(card(page, "企業研究をする").getByTestId("due")).toHaveText("明日");
     await expect
       .poll(async () => (await serverTasks(page))[0])
@@ -140,6 +142,7 @@ test.describe("＋ボタンで追加", () => {
     await expect(page.getByTestId("new-add")).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("new-sheet")).toHaveCount(0);
+    await gotoTasks(page);
     await expect(page.getByTestId("count-todo")).toHaveText("0");
   });
 
@@ -154,6 +157,7 @@ test.describe("＋ボタンで追加", () => {
     await expect.poll(async () => (await serverTasks(page)).length).toBe(2);
     await page.reload();
     await ready(page);
+    await gotoTasks(page);
     await expect(card(page, "一つ目")).toBeVisible();
   });
 
@@ -181,6 +185,7 @@ test.describe("＋ボタンで追加", () => {
     });
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await expect(card(page, "前の版のメモ")).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem("flick:boot-queue"))).toBeNull();
   });
@@ -203,7 +208,9 @@ test("全画面スケルトンがデータ取得まで表示され、終わる�
   const vp = page.viewportSize()!;
   expect(box!.width).toBeGreaterThanOrEqual(vp.width - 1);
   expect(box!.height).toBeGreaterThanOrEqual(vp.height - 1);
-  await expect(sk.locator(".sk-card")).toHaveCount(6);
+  // 開いたら最初の「今日」と同じ形（日付の行と時間割）
+  await expect(sk.locator(".sk-timeline")).toBeVisible();
+  await expect(sk.locator(".sk-event")).toHaveCount(3);
   await expect(sk.locator(".sk-fab")).toBeVisible();
   release();
   await ready(page);
@@ -240,8 +247,10 @@ test.describe("フリックでステータス管理", () => {
   test("左フリックで 完了 → 進行中 → 未着手 に戻る", async ({ page }) => {
     await addMemo(page, "戻す対象");
     await flick(page, card(page, "戻す対象"), 230);
+    await expect(page.getByTestId("count-doing")).toHaveText("1");
     await page.getByTestId("tab-doing").tap();
     await flick(page, card(page, "戻す対象"), 230);
+    await expect(page.getByTestId("count-done")).toHaveText("1");
     await page.getByTestId("tab-done").tap();
     await flick(page, card(page, "戻す対象"), -230);
     await expect(page.getByTestId("count-doing")).toHaveText("1");
@@ -415,6 +424,7 @@ test.describe("AI (Workers AI)", () => {
   });
 
   test("状況を書くと AI がタスクに分け、確かめてから追加できる", async ({ page }) => {
+    await gotoTasks(page);
     await page.getByTestId("ai-open").tap();
     const sheet = page.getByTestId("ai-sheet");
     await expect(sheet).toBeVisible();
@@ -619,20 +629,32 @@ test.describe("Liquid Glass / レイアウト", () => {
     expect(await page.locator(".sk-tabs").evaluate((el) => getComputedStyle(el).backdropFilter)).toBe("none");
   });
 
-  test("タブを切り替えると選択レンズがアニメーションで移動する", async ({ page }) => {
+  test("下のタブを切り替えると選択レンズがアニメーションで移動する", async ({ page }) => {
     await login(page);
     await page.goto("/");
     await ready(page);
-    const lens = page.locator(".tab-lens");
-    const x0 = (await lens.boundingBox())!.x;
-    await page.getByTestId("tab-done").tap();
-    await page.waitForTimeout(60);
-    const mid = (await lens.boundingBox())!.x;
-    await page.waitForTimeout(700);
-    const x1 = (await lens.boundingBox())!.x;
-    expect(mid).toBeGreaterThan(x0);
-    expect(Math.abs(mid - x1)).toBeGreaterThan(1); // 途中経過がある = 瞬間移動ではない（ばねで行き過ぎることもある）
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("完了");
+    // レンズの位置を毎フレーム記録してから切り替える（ページの中で測るので通信の遅れに左右されない）
+    await page.evaluate(() => {
+      const xs: number[] = [];
+      (window as any).__lensXs = xs;
+      const t0 = performance.now();
+      const tick = () => {
+        const el = document.querySelector(".tab-lens");
+        if (el) xs.push(el.getBoundingClientRect().x);
+        if (performance.now() - t0 < 1500) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    await page.getByTestId("nav-tasks").tap();
+    await page.waitForTimeout(1600);
+    const xs: number[] = await page.evaluate(() => (window as any).__lensXs);
+    const x0 = xs[0];
+    const x1 = xs[xs.length - 1];
+    expect(x1).toBeGreaterThan(x0 + 50);
+    // 途中の位置がいくつもある = 瞬間移動ではない
+    const between = new Set(xs.filter((x) => x > x0 + 2 && Math.abs(x - x1) > 2).map((x) => Math.round(x)));
+    expect(between.size).toBeGreaterThan(2);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("タスク");
   });
 
   test("iPhone SE の幅でも横スクロールが出ない", async ({ browser }) => {

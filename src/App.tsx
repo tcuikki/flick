@@ -8,13 +8,17 @@ import { headerDate } from "./date";
 import { haptic } from "./haptics";
 import { TaskCard } from "./components/TaskCard";
 import { TaskSheet } from "./components/TaskSheet";
-import { Tabs } from "./components/Tabs";
+import { StatusTabs } from "./components/StatusTabs";
+import { BottomNav, PAGES, PAGE_LABEL, type Page } from "./components/BottomNav";
 import { NewTaskSheet } from "./components/NewTaskSheet";
 import { AiSheet } from "./components/AiSheet";
 import { MailView } from "./components/MailView";
-import { SLOTS, SLOT_LABEL, dayTimeLabel, loadMail, newUnread, useMail } from "./mail";
+import { TodayView } from "./components/TodayView";
+import { EventSheet, type EventDraft } from "./components/EventSheet";
+import { loadMail, newUnread, useMail } from "./mail";
+import { clearCalCache, loadDay, today } from "./calendar";
 import { primeKeyboard } from "./focus";
-import { ChevronRight, Google, MailIcon, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
+import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
 type Toast = { id: number; text: string; undo?: () => void };
 const MIN_SKELETON_MS = 450;
@@ -30,22 +34,36 @@ export function App() {
 
   const [tab, setTabState] = useState<Status>("todo");
   const [dir, setDir] = useState(0);
+  // 開いたら最初は「今日」。メール・カレンダーをつないで戻ってきたときはそのページ
+  const [page, setPageState] = useState<Page>(() => {
+    const q = new URLSearchParams(location.search);
+    return q.get("mail") === "connected" ? "mail" : "today";
+  });
+  const [pageDir, setPageDir] = useState(0);
+  const [eventDraft, setEventDraft] = useState<EventDraft | null>(null);
   const [booted, setBooted] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [menu, setMenu] = useState(false);
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState(false);
-  const [mailOpen, setMailOpen] = useState(false);
   const mailExpired = useMail((m) => m.sources.some((s) => s.status === "expired"));
   // 選び出した配列を毎回作ると再描画が止まらなくなるので、元のデータだけ購読して useMemo で計算する
   const mailItems = useMail((m) => m.items);
   const openedAt = useMail((m) => m.openedAt);
   const fresh = useMemo(() => newUnread({ items: mailItems, openedAt }), [mailItems, openedAt]);
-  const freshKey = fresh.map((m) => m.id).join(",");
   const lastUpdate = useMail((m) => Math.max(0, ...m.sources.map((s) => s.checked_at ?? 0)));
-  const closeMail = useCallback(() => setMailOpen(false), []);
 
+  const goPage = useCallback((p: Page) => {
+    setPageState((cur) => {
+      if (cur !== p) {
+        setPageDir(Math.sign(PAGES.indexOf(p) - PAGES.indexOf(cur)));
+        window.scrollTo({ top: 0 });
+      }
+      return p;
+    });
+  }, []);
+  const closeEvent = useCallback(() => setEventDraft(null), []);
   const setTab = useCallback((s: Status) => {
     setTabState((cur) => {
       setDir(Math.sign(DIR[s] - DIR[cur]));
@@ -89,18 +107,20 @@ export function App() {
     (s: Status) => {
       setAdding(false);
       setTab(s);
+      goPage("tasks");
       window.scrollTo({ top: 0, behavior: "smooth" });
     },
-    [setTab],
+    [setTab, goPage],
   );
   const onAiAdded = useCallback(
     (n: number) => {
       setAsking(false);
       setTab("todo");
+      goPage("tasks");
       window.scrollTo({ top: 0, behavior: "smooth" });
       showToast(`${n}件追加しました`);
     },
-    [setTab, showToast],
+    [setTab, goPage, showToast],
   );
 
   /* ---------- メール（10:00 / 18:00 のまとめ） ---------- */
@@ -136,11 +156,22 @@ export function App() {
         "ms-notready": "大学のOutlookは、Microsoft側の準備がまだです",
       };
       showToast(msg[mail] ?? "つなげませんでした");
-      if (mail === "connected") { setMailOpen(true); setTimeout(() => void loadMail(), 4000); }
+      if (mail === "connected") { goPage("mail"); setTimeout(() => void loadMail(), 4000); }
+      history.replaceState(null, "", "/");
+    }
+    const cal = params.get("cal");
+    if (cal) {
+      const msg: Record<string, string> = {
+        connected: "カレンダーをつなぎました",
+        denied: "カレンダーの許可がありませんでした（チェックを入れて許可してください）",
+      };
+      showToast(msg[cal] ?? "カレンダーにつなげませんでした");
+      goPage("today");
+      if (cal === "connected") void loadDay(today());
       history.replaceState(null, "", "/");
     }
     return () => window.removeEventListener("keydown", onKey);
-  }, [showToast]);
+  }, [showToast, goPage]);
 
   /* ---------- 一覧 ---------- */
   const counts = useMemo(() => {
@@ -197,6 +228,45 @@ export function App() {
   const dateOpacity = useTransform(scrollY, [0, 40], [1, 0]);
   const edgeOpacity = useTransform(scrollY, [10, 60], [0, 1]);
 
+  const taskList = (
+    <AnimatePresence mode="popLayout" initial={false} custom={dir}>
+      <motion.ul
+        key={tab}
+        className="list"
+        data-testid={`list-${tab}`}
+        custom={dir}
+        variants={{
+          enter: (d: number) => ({ x: d * 60, opacity: 0, filter: "blur(4px)" }),
+          center: { x: 0, opacity: 1, filter: "blur(0px)" },
+          exit: (d: number) => ({ x: d * -60, opacity: 0, filter: "blur(4px)" }),
+        }}
+        initial="enter"
+        animate="center"
+        exit="exit"
+        transition={{ type: "spring", stiffness: 380, damping: 34 }}
+      >
+        <AnimatePresence initial={true}>
+          {list.map((t, i) => (
+            <TaskCard key={t.id} task={t} index={i} onOpen={(x) => setOpenId(x.id)} onAction={onAction} onToggleDone={onToggleDone} />
+          ))}
+        </AnimatePresence>
+        {list.length === 0 && auth !== "out" && (
+          <motion.li
+            key="empty"
+            className="empty"
+            aria-label="タスクなし"
+            data-testid="empty"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.15 }}
+          >
+            <Tray size={64} />
+          </motion.li>
+        )}
+      </motion.ul>
+    </AnimatePresence>
+  );
+
   return (
     <MotionConfig reducedMotion="user">
       <motion.div className="scroll-edge top" style={{ opacity: edgeOpacity }} aria-hidden="true" />
@@ -212,17 +282,17 @@ export function App() {
         <div className="head-text" style={{ visibility: auth === "out" ? "hidden" : "visible" }}>
           <motion.div className="head-date" style={{ opacity: dateOpacity }}>{headerDate()}</motion.div>
           <motion.h1 className="head-title" style={{ scale: titleScale, y: titleY }}>
-            <AnimatePresence mode="popLayout" initial={false} custom={dir}>
+            <AnimatePresence mode="popLayout" initial={false} custom={pageDir}>
               <motion.span
-                key={tab}
-                custom={dir}
-                initial={{ y: 18 * (dir || 1), opacity: 0, filter: "blur(4px)" }}
+                key={page}
+                custom={pageDir}
+                initial={{ y: 18 * (pageDir || 1), opacity: 0, filter: "blur(4px)" }}
                 animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
-                exit={{ y: -18 * (dir || 1), opacity: 0, filter: "blur(4px)" }}
+                exit={{ y: -18 * (pageDir || 1), opacity: 0, filter: "blur(4px)" }}
                 transition={{ type: "spring", stiffness: 420, damping: 32 }}
                 style={{ display: "inline-block" }}
               >
-                {STATUS_LABEL[tab]}
+                {PAGE_LABEL[page]}
               </motion.span>
             </AnimatePresence>
           </motion.h1>
@@ -235,16 +305,6 @@ export function App() {
               </motion.span>
             )}
           </AnimatePresence>
-          {auth === "in" && (
-            <motion.button className="mail-btn glass" whileTap={{ scale: 0.9 }} onClick={() => { haptic("light"); setMailOpen(true); }} aria-label="メール" data-testid="mail-open">
-              <MailIcon size={20} />
-              <AnimatePresence>
-                {(fresh.length > 0 || mailExpired) && (
-                  <motion.i className={`mail-badge ${mailExpired && !fresh.length ? "warn" : ""}`} data-testid="mail-badge" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 20 }} />
-                )}
-              </AnimatePresence>
-            </motion.button>
-          )}
           {auth === "in" && user && (
             <motion.button className="avatar glass" whileTap={{ scale: 0.9 }} onClick={() => setMenu((m) => !m)} aria-label="アカウント" data-testid="avatar">
               {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : <span>{(user.name || user.email).slice(0, 1).toUpperCase()}</span>}
@@ -274,7 +334,7 @@ export function App() {
                 <span><Sparkle size={15} /> AIで自動整理</span>
                 <input type="checkbox" role="switch" className="switch" checked={aiOn} onChange={(e) => setAiEnabled(e.target.checked)} data-testid="ai-toggle" />
               </label>
-              <button className="menu-row danger" onClick={() => { setMenu(false); void logout(); }} data-testid="logout">ログアウト</button>
+              <button className="menu-row danger" onClick={() => { setMenu(false); clearCalCache(); void logout(); }} data-testid="logout">ログアウト</button>
             </motion.div>
           </>
         )}
@@ -298,75 +358,45 @@ export function App() {
           </motion.section>
         )}
 
-        <AnimatePresence>
-          {booted && auth === "in" && !mailOpen && fresh.length > 0 && (
-            <motion.button
-              key={freshKey}
-              className="mail-banner glass"
-              data-testid="mail-banner"
-              initial={{ opacity: 0, y: -24, scale: 0.94 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -16, scale: 0.96 }}
-              transition={{ type: "spring", stiffness: 420, damping: 26 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={() => { haptic("light"); setMailOpen(true); }}
-            >
-              <span className="mail-banner-icon"><MailIcon size={20} /></span>
-              <span className="mail-banner-text">
-                <strong>新しいメール {fresh.length}件</strong>
-                <span>
-                  {SLOTS.filter((s) => fresh.some((m) => m.slot === s)).map((s) => `${SLOT_LABEL[s]} ${fresh.filter((m) => m.slot === s).length}`).join("・")}
-                  {lastUpdate > 0 && <i>{dayTimeLabel(lastUpdate)} 更新</i>}
-                </span>
-              </span>
-              <ChevronRight size={18} className="mail-banner-chev" />
-            </motion.button>
-          )}
-        </AnimatePresence>
+        {booted && auth === "out" && taskList}
 
-        {booted && (
-          <AnimatePresence mode="popLayout" initial={false} custom={dir}>
-            <motion.ul
-              key={tab}
-              className="list"
-              data-testid={`list-${tab}`}
-              custom={dir}
+        {booted && auth !== "out" && (
+          <AnimatePresence mode="popLayout" initial={false} custom={pageDir}>
+            <motion.div
+              key={page}
+              className={`page page-${page}`}
+              data-testid={`page-${page}`}
+              custom={pageDir}
               variants={{
-                enter: (d: number) => ({ x: d * 60, opacity: 0, filter: "blur(4px)" }),
-                center: { x: 0, opacity: 1, filter: "blur(0px)" },
-                exit: (d: number) => ({ x: d * -60, opacity: 0, filter: "blur(4px)" }),
+                enter: (d: number) => ({ x: d * 70, opacity: 0 }),
+                center: { x: 0, opacity: 1 },
+                exit: (d: number) => ({ x: d * -70, opacity: 0 }),
               }}
               initial="enter"
               animate="center"
               exit="exit"
-              transition={{ type: "spring", stiffness: 380, damping: 34 }}
+              transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
-              <AnimatePresence initial={true}>
-                {list.map((t, i) => (
-                  <TaskCard key={t.id} task={t} index={i} onOpen={(x) => setOpenId(x.id)} onAction={onAction} onToggleDone={onToggleDone} />
-                ))}
-              </AnimatePresence>
-              {list.length === 0 && auth !== "out" && (
-                <motion.li
-                  key="empty"
-                  className="empty"
-                  aria-label="タスクなし"
-                  data-testid="empty"
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.15 }}
-                >
-                  <Tray size={64} />
-                </motion.li>
+              {page === "today" && (
+                <TodayView fresh={fresh} mailUpdated={lastUpdate} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
               )}
-            </motion.ul>
+              {page === "mail" && <MailView active toast={showToast} />}
+              {page === "tasks" && (
+                <>
+                  <StatusTabs value={tab} counts={counts} onChange={setTab} />
+                  {taskList}
+                </>
+              )}
+            </motion.div>
           </AnimatePresence>
         )}
       </main>
 
-      {booted && auth !== "out" && <Tabs value={tab} counts={counts} onChange={setTab} />}
+      {booted && auth !== "out" && (
+        <BottomNav value={page} onChange={goPage} mailBadge={fresh.length} mailWarn={mailExpired} taskCount={counts.todo + counts.doing} />
+      )}
 
-      {booted && auth === "in" && (
+      {booted && auth === "in" && page !== "mail" && (
         <div className="fabs">
           <motion.button
             className="fab-ai glass"
@@ -400,7 +430,7 @@ export function App() {
       <TaskSheet taskId={openId} onClose={() => setOpenId(null)} onDelete={handleDelete} onComplete={onComplete} />
       <NewTaskSheet open={adding} defaultStatus={tab} onClose={closeAdd} onAdded={onAdded} />
       <AiSheet open={asking} onClose={closeAsk} onAdded={onAiAdded} />
-      <MailView open={mailOpen} onClose={closeMail} toast={showToast} />
+      <EventSheet draft={eventDraft} onClose={closeEvent} toast={showToast} />
 
       <AnimatePresence>
         {toast && (

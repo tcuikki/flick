@@ -15,8 +15,34 @@ export async function ready(page: Page) {
   await expect(page.getByTestId("skeleton")).toHaveCount(0, { timeout: 8000 });
 }
 
+/** 下のタブで「タスク」のページへ（開いた直後は「今日」） */
+export async function gotoTasks(page: Page) {
+  const nav = page.getByTestId("nav-tasks");
+  if ((await nav.getAttribute("aria-selected")) !== "true") await nav.tap();
+  await settled(page, "tasks");
+}
+
+/** 未着手・進行中・完了の切り替えで一覧が横にスライドしている途中なら、終わるまで待つ */
+export async function listSettled(page: Page) {
+  await expect(page.locator(".list")).toHaveCount(1);
+  await expect
+    .poll(() => page.locator(".list").evaluate((e) => { const t = getComputedStyle(e).transform; return t === "none" ? 0 : Math.abs(new DOMMatrix(t).m41); }))
+    .toBeLessThan(0.5);
+}
+
+/** ページの横スライドが終わるまで待つ（動いている途中のタップやフリックは位置がずれる） */
+export async function settled(page: Page, name: "today" | "mail" | "tasks") {
+  const el = page.getByTestId(`page-${name}`);
+  await expect(el).toBeVisible();
+  await expect(page.locator(".page")).toHaveCount(1);
+  await expect
+    .poll(() => el.evaluate((e) => { const t = getComputedStyle(e).transform; return t === "none" ? 0 : Math.abs(new DOMMatrix(t).m41); }))
+    .toBeLessThan(0.5);
+}
+
 /** ＋ボタン → やることを打って Enter（状態・期限は既定のまま） */
 export async function addMemo(page: Page, text: string) {
+  if (await page.getByTestId("nav-tasks").count()) await gotoTasks(page);
   await page.getByTestId("add").tap();
   const sheet = page.getByTestId("new-sheet");
   await expect(sheet).toBeVisible();
@@ -30,6 +56,10 @@ export const card = (page: Page, title: string) => page.locator(`[data-testid=ta
 
 /** CDP で本物のタッチイベントを送ってフリックする（指で横に払う動き） */
 export async function flick(page: Page, target: Locator, dx: number, steps = 10, stepMs = 12) {
+  await listSettled(page);
+  await expect(target.locator(".card")).toBeVisible();
+  // カードが出てくる動き（下から浮き上がる）が終わってから払う
+  await expect.poll(() => target.evaluate((e) => { const t = getComputedStyle(e).transform; return t === "none" ? 0 : Math.abs(new DOMMatrix(t).m42); })).toBeLessThan(0.5);
   const box = await target.locator(".card").boundingBox();
   if (!box) throw new Error("card not visible");
   const y = box.y + box.height / 2;

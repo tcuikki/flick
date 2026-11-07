@@ -126,8 +126,16 @@ html.sheet-open .fabs { transform: translateY(40px) scale(0.6); opacity: 0; poin
   height: var(--tabs-h); max-width: 620px; margin: 0 auto; border-radius: 29px;
   display: grid; grid-template-columns: repeat(3, 1fr); padding: 5px;
 }
-.tab { position: relative; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 24px; font-size: 14px; font-weight: 600; color: var(--ink-2); transition: color 0.25s; }
-.tab.on { color: var(--ink); }
+.tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; border-radius: 24px; font-size: 11.5px; font-weight: 700; color: var(--ink-2); transition: color 0.25s; }
+.tab.on { color: var(--blue); }
+.tab-icon { position: relative; display: grid; place-items: center; height: 22px; }
+.nav-badge {
+  position: absolute; top: -5px; left: 13px; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+  display: grid; place-items: center; font-size: 10.5px; font-style: normal; font-weight: 800; color: #fff; background: var(--red);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9); font-variant-numeric: tabular-nums;
+}
+.nav-badge.warn { background: var(--orange); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .tab > span:not(.tab-lens) { position: relative; z-index: 1; }
 .tab-lens {
   position: absolute; inset: 0; border-radius: 24px; z-index: 0;
@@ -314,40 +322,13 @@ html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 
 /* ---------- メール（未着手・進行中・完了とは別の枠） ---------- */
 :root { --personal: #ea4335; --business: #7c5cff; --univ: #0f6cbd; }
-.mail-btn { position: relative; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); }
-.mail-badge { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px #fff; }
-.mail-badge.warn { background: var(--orange); }
-html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; transform: translateY(30px); transition: transform 0.35s var(--spring), opacity 0.25s; }
 
-/* 新しいメールのお知らせ（一覧の上にバッと出る） */
-.mail-banner {
-  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
-  margin: 0 0 12px; padding: 12px 14px; border-radius: 22px; --glass-fill: rgba(255, 255, 255, 0.72);
-}
-.mail-banner-icon {
-  flex: none; width: 40px; height: 40px; border-radius: 13px; display: grid; place-items: center; color: #fff;
-  background: linear-gradient(135deg, var(--personal), var(--business) 50%, var(--univ));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 6px 14px rgba(124, 92, 255, 0.28);
-}
-.mail-banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.mail-banner-text strong { font-size: 15px; letter-spacing: -0.01em; }
-.mail-banner-text span { font-size: 12.5px; color: var(--ink-2); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.mail-banner-text i { font-style: normal; color: var(--ink-3); }
-.mail-banner-chev { flex: none; color: var(--ink-3); }
-
-/* 全画面のメール */
-.mail-view { position: fixed; inset: 0; z-index: 55; background: var(--bg); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-.mail-head {
-  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
-  padding: calc(var(--safe-t) + 10px) 14px 10px; --glass-fill: rgba(247, 248, 251, 0.78); border-radius: 0 0 24px 24px;
-}
-.mail-back, .mail-refresh { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: rgba(118, 118, 128, 0.1); color: var(--ink); }
+/* メールのページ */
+.mail-refresh { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: rgba(118, 118, 128, 0.1); color: var(--ink); }
 .mail-refresh.spin svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.mail-head-text { flex: 1; min-width: 0; }
-.mail-head-text h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
-.mail-head-text span { font-size: 12.5px; color: var(--ink-2); }
-.mail-body { max-width: 620px; margin: 0 auto; padding: 14px 14px calc(var(--safe-b) + 40px); }
+.mail-body { padding: 0 0 20px; }
+.mail-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 4px 10px 6px; font-size: 12.5px; color: var(--ink-2); }
 
 .mail-seg { margin-bottom: 14px; }
 .seg-pill.src-personal { background: var(--personal); }
@@ -434,3 +415,110 @@ html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; t
 .mail-open-original { display: block; text-align: center; margin: 14px 0 2px; font-size: 13px; color: var(--blue); }
 .mail-count.search b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .mail-count.search span { flex: none; }
+
+/* ---------- ページ（今日・メール・タスク） ---------- */
+.page { position: relative; }
+.main:has(.page-today) { padding-bottom: calc(var(--safe-b) + 96px); }
+.status-tabs { margin: 0 0 14px; }
+.status-tab-inner { display: inline-flex; align-items: center; gap: 6px; }
+.status-tabs .seg-btn.on .tab-count { color: rgba(255, 255, 255, 0.85); }
+
+/* ---------- 今日 ---------- */
+.today { display: flex; flex-direction: column; }
+
+/* 新着メール（強調） */
+.today-mail {
+  position: relative; display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; overflow: hidden;
+  margin: 0 0 12px; padding: 14px 14px 14px 12px; border-radius: 22px; color: #fff;
+  background: linear-gradient(120deg, #ff5f6d 0%, #8b5cf6 52%, #1f7ae0 100%);
+  box-shadow: 0 12px 28px rgba(124, 92, 255, 0.32), 0 2px 6px rgba(17, 24, 39, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.today-mail::after { /* ゆっくり流れる光で「来ている」ことを目立たせる */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, 0.28) 45%, transparent 60%);
+  transform: translateX(-100%); animation: today-shine 3.2s ease-in-out 0.6s infinite;
+}
+@keyframes today-shine { 0% { transform: translateX(-100%); } 55%, 100% { transform: translateX(100%); } }
+.today-mail-icon { position: relative; flex: none; width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; background: rgba(255, 255, 255, 0.2); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4); }
+.today-mail-icon i { position: absolute; top: -6px; right: -6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; font-style: normal; font-size: 11.5px; font-weight: 800; color: var(--red); background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18); }
+.today-mail-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.today-mail-text strong { font-size: 16px; letter-spacing: -0.01em; }
+.today-mail-slots { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.today-mail-slots i { font-style: normal; opacity: 0.85; }
+.src-chip { height: 22px; padding: 0 9px; border-radius: 11px; display: inline-flex; align-items: center; font-weight: 800; background: rgba(255, 255, 255, 0.92); }
+.src-chip.src-personal { color: var(--personal); }
+.src-chip.src-business { color: var(--business); }
+.src-chip.src-univ { color: var(--univ); }
+.today-mail-chev { flex: none; opacity: 0.85; }
+
+/* 日付の移動 */
+.day-nav { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; min-height: 40px; }
+.day-arrow, .day-add { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); background: rgba(118, 118, 128, 0.1); }
+.day-add { width: auto; padding: 0 12px 0 9px; border-radius: 18px; display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; font-size: 13.5px; font-weight: 800; color: var(--blue); background: rgba(0, 122, 255, 0.1); }
+.day-label { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.day-label strong { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.day-rel { height: 22px; padding: 0 9px; border-radius: 11px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 800; color: var(--ink-2); background: rgba(118, 118, 128, 0.12); }
+.day-rel.is-today { color: #fff; background: var(--red); }
+.day-today { flex: none; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 13px; font-weight: 800; color: var(--blue); background: rgba(0, 122, 255, 0.1); }
+
+/* 終日の予定 */
+.allday { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.allday-ev {
+  max-width: 100%; height: 30px; padding: 0 12px; border-radius: 10px; font-size: 13.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: color-mix(in srgb, var(--ev) 70%, #000); background: color-mix(in srgb, var(--ev) 16%, #fff); box-shadow: inset 3px 0 0 var(--ev);
+}
+
+/* 縦の時間割（中だけスクロール。画面の下のタブの上まで） */
+.tl-scroll {
+  --tl-gutter: 46px;
+  position: relative; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  height: calc(100dvh - var(--tl-top, 260px) - var(--safe-b) - var(--tabs-h) - 24px); min-height: 300px;
+  border-radius: 22px; background: var(--card); box-shadow: var(--card-shadow);
+}
+.timeline { position: relative; cursor: copy; }
+.tl-hour { position: absolute; left: 0; right: 0; height: 0; border-top: 0.5px solid var(--sep); }
+.tl-hour:first-child { border-top: 0; }
+.tl-hour span { position: absolute; left: 0; width: calc(var(--tl-gutter) - 8px); top: -8px; text-align: right; font-size: 11px; font-weight: 600; color: var(--ink-3); font-variant-numeric: tabular-nums; background: var(--card); }
+.tl-event {
+  position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; overflow: hidden;
+  padding: 4px 8px 4px 9px; border-radius: 10px; font-size: 12.5px; line-height: 1.3; cursor: pointer;
+  color: color-mix(in srgb, var(--ev) 62%, #000); background: color-mix(in srgb, var(--ev) 17%, #fff);
+  box-shadow: inset 3px 0 0 var(--ev), 0 0 0 1px #fff;
+}
+.tl-event.past { opacity: 0.55; }
+.tl-event.short { flex-direction: row; align-items: center; gap: 6px; padding-top: 1px; padding-bottom: 1px; }
+.tl-ev-title { font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-ev-time { font-variant-numeric: tabular-nums; opacity: 0.85; white-space: nowrap; }
+.tl-ev-loc { opacity: 0.75; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-now { position: absolute; left: calc(var(--tl-gutter) - 5px); right: 0; height: 0; border-top: 2px solid var(--red); z-index: 3; pointer-events: none; }
+.tl-now i { position: absolute; left: -1px; top: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+.tl-skeleton .sk { position: absolute; left: calc(var(--tl-gutter) + 4px); right: 10px; border-radius: 10px; }
+.tl-empty { margin: 10px 6px 0; font-size: 12.5px; color: var(--ink-2); text-align: center; }
+
+/* カレンダーをつなぐ */
+.cal-connect { background: var(--card); border-radius: 26px; box-shadow: var(--card-shadow); padding: 24px 22px 22px; text-align: center; }
+.cal-connect h3 { margin: 14px 0 8px; font-size: 19px; letter-spacing: -0.01em; }
+.cal-connect p { margin: 0 0 6px; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
+.cal-connect.expired { border: 1.5px solid rgba(255, 149, 0, 0.35); }
+.cal-connect.expired h3 { margin-top: 0; }
+.cal-hero { width: 64px; height: 64px; margin: 0 auto; border-radius: 20px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #4da3ff, #1a73e8); box-shadow: 0 14px 30px rgba(26, 115, 232, 0.28); }
+
+/* 予定のシート */
+.event-cal-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 700; color: var(--ink-2); padding: 0 2px 2px; }
+.event-cal-row em { font-style: normal; font-weight: 600; color: #c46a00; }
+.event-cal-dot { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+.event-cal-row .event-cal-dot { margin-right: 0; }
+.event-title { display: block; }
+.event-fields { border-radius: 16px; background: rgba(118, 118, 128, 0.08); padding: 4px 14px; }
+.event-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 48px; font-size: 15px; font-weight: 600; }
+.event-row + .event-row { border-top: 0.5px solid var(--sep); }
+.event-row.cal-pick { flex-wrap: wrap; padding: 8px 0; }
+.event-when { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.event-pill { position: relative; height: 34px; padding: 0 12px; border-radius: 10px; display: inline-flex; align-items: center; font-size: 15px; font-weight: 700; background: rgba(118, 118, 128, 0.12); font-variant-numeric: tabular-nums; }
+.event-pill input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; font-size: 16px; }
+.event-pill input:disabled { cursor: default; }
+.event-input { height: 46px; padding-top: 0; padding-bottom: 0; }
+.event-readonly { margin: 12px 4px 0; font-size: 13px; color: var(--ink-2); }
+.event-error { margin: 12px 4px 0; font-size: 13.5px; font-weight: 700; color: var(--red); }
+.event-sheet .primary-btn { flex: 1; }
+.del-btn.confirm { width: auto; padding: 0 16px; gap: 6px; display: inline-flex; align-items: center; color: #fff; background: var(--red); font-weight: 800; }

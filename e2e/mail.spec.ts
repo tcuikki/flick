@@ -22,7 +22,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await expect(page.getByTestId("mail-view")).toBeVisible();
     await expect(page.getByTestId("mail-view").getByRole("tab")).toHaveText(["個人", "事業", "大学"]);
     await expect(page.getByTestId("mail-updated")).toHaveText("毎日 10:00 と 20:00 に更新");
@@ -31,10 +31,12 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(page.getByTestId("mail-connect-card-business")).toContainText("AIHP");
     await page.getByTestId("mail-tab-univ").tap();
     await expect(page.getByTestId("mail-connect-card-univ")).toContainText("受け皿のGmail");
-    // メールの画面のあいだは、タスクの＋とタブは隠す（別の枠）
-    await expect(page.locator(".fabs")).toHaveCSS("opacity", "0");
-    await page.getByTestId("mail-close").tap();
+    // メールのページでは、タスクの＋は出さない（下のタブは出したまま）
+    await expect(page.locator(".fabs")).toHaveCount(0);
+    await expect(page.getByTestId("nav-mail")).toHaveAttribute("aria-selected", "true");
+    await page.getByTestId("nav-today").tap();
     await expect(page.getByTestId("mail-view")).toHaveCount(0);
+    await expect(page.getByTestId("today")).toBeVisible();
   });
 
   test("Gmail は読むだけの権限で、別のアカウントも選べる。大学は Microsoft の読むだけの権限", async ({ page }) => {
@@ -49,7 +51,7 @@ test.describe("メール（個人・事業・大学）", () => {
     );
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-business").tap();
     await page.getByTestId("mail-connect").tap();
     await expect.poll(() => seen.length).toBeGreaterThan(0);
@@ -76,7 +78,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await cron(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
 
     // 未読の数が枠ごとに出る
     await expect(page.getByTestId("mail-unread-personal")).toHaveText("2");
@@ -109,7 +111,7 @@ test.describe("メール（個人・事業・大学）", () => {
     // 既読はサーバーにも残る
     await page.reload();
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-personal").tap();
     await expect(rows(page).nth(1)).toHaveAttribute("data-read", "1");
 
@@ -137,7 +139,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await cron(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-personal").tap();
     const target = rows(page).nth(0);
     await expect(target).toHaveAttribute("data-read", "0");
@@ -168,7 +170,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await cron(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-univ").tap();
     await rows(page).nth(0).tap();
     await expect(page.getByTestId("mail-detail-body")).toContainText("本文のテストです。");
@@ -177,11 +179,11 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect.poll(async () => (await serverTasks(page)).map((t) => t.title)).toEqual(["【至急】履修登録の確認について"]);
     expect((await serverTasks(page))[0].note).toContain("東京都市大学 教務課");
     await page.keyboard.press("Escape");
-    await page.getByTestId("mail-close").tap();
+    await page.getByTestId("nav-tasks").tap();
     await expect(card(page, "【至急】履修登録の確認について")).toBeVisible();
   });
 
-  test("自動更新で新しいメールが来ると一覧の上にお知らせ。メールを開いて閉じると消える", async ({ page }) => {
+  test("自動更新で新しいメールが来ると「今日」の一番上に強調して出る。メールを開いて戻ると消える", async ({ page }) => {
     await login(page);
     await devConnect(page, "personal");
     await devConnect(page, "univ");
@@ -189,12 +191,18 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.goto("/");
     await ready(page);
     const banner = page.getByTestId("mail-banner");
-    await expect(banner).toContainText("新しいメール 3件");
-    await expect(banner).toContainText("個人 2・大学 1");
-    await expect(page.getByTestId("mail-badge")).toBeVisible();
+    await expect(banner).toContainText("新着メールが 3件 来ています");
+    await expect(page.getByTestId("mail-banner-personal")).toHaveText("個人 2");
+    await expect(page.getByTestId("mail-banner-univ")).toHaveText("大学 1");
+    await expect(page.getByTestId("mail-banner-business")).toHaveCount(0);
+    // 今日のページの一番上（予定より上）
+    const b = (await banner.boundingBox())!;
+    const nav = (await page.getByTestId("day-nav").boundingBox())!;
+    expect(b.y).toBeLessThan(nav.y);
+    await expect(page.getByTestId("mail-badge")).toHaveText("3");
     await banner.tap();
     await expect(page.getByTestId("mail-view")).toBeVisible();
-    await page.getByTestId("mail-close").tap();
+    await page.getByTestId("nav-today").tap();
     await expect(banner).toHaveCount(0);
     await expect(page.getByTestId("mail-badge")).toHaveCount(0);
     await page.reload();
@@ -222,7 +230,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await cron(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-personal").tap();
     await page.getByTestId("mail-search").fill("面接");
     await page.getByTestId("mail-search").press("Enter");
@@ -255,7 +263,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await cron(page);
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-personal").tap();
     await expect(page.getByTestId("mail-unread-personal")).toHaveText("2");
     await page.getByTestId("mail-read-all").tap();
@@ -274,7 +282,7 @@ test.describe("メール（個人・事業・大学）", () => {
     expect(r.result).toEqual({ personal: "expired", univ: "ok" });
     await page.goto("/");
     await ready(page);
-    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("nav-mail").tap();
     await page.getByTestId("mail-tab-personal").tap();
     await expect(page.getByTestId("mail-expired")).toContainText("個人との接続が切れました");
     await page.getByTestId("mail-tab-univ").tap();

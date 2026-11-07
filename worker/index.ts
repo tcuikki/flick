@@ -6,6 +6,9 @@ import {
   GMAIL_SCOPE, MS_SCOPE, SLOTS, type Slot,
   bodyOf, encryptToken, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
 } from "./mail";
+import {
+  CAL_EVENTS_SCOPE, CAL_LIST_SCOPE, createEvent, deleteEvent, eventsForDay, mockSeedHoliday, saveCalSource, updateEvent, validateInput, type WriteResult,
+} from "./calendar";
 
 export type Env = {
   DB: D1Database;
@@ -147,6 +150,23 @@ async function connectGmail(c: any, slot: Slot, code: string, verifier: string) 
   }
 }
 
+/** Google カレンダー（予定の編集）の許可を受け取り、リフレッシュトークンを暗号化して保存する */
+async function connectCalendar(c: any, code: string, verifier: string) {
+  const userId = await sessionUserId(c);
+  if (!userId) return c.redirect("/?cal=failed", 302);
+  try {
+    const tokens = await google(c).validateAuthorizationCode(code, verifier);
+    const scopes: string[] = tokens.hasScopes() ? tokens.scopes() : [];
+    if (!scopes.includes(CAL_EVENTS_SCOPE) || !tokens.hasRefreshToken()) return c.redirect("/?cal=denied", 302);
+    const claims = decodeIdToken(tokens.idToken()) as Record<string, any>;
+    await saveCalSource(c.env, userId, String(claims.email ?? ""), tokens.refreshToken());
+    return c.redirect("/?cal=connected", 302);
+  } catch (e) {
+    console.warn("calendar connect failed", e);
+    return c.redirect("/?cal=failed", 302);
+  }
+}
+
 app.get("/auth/google/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
@@ -157,8 +177,9 @@ app.get("/auth/google/callback", async (c) => {
   const purpose = getCookie(c, "flick_oauth_purpose");
   deleteCookie(c, "flick_oauth_purpose", { path: "/" });
   if (!code || !state || !savedState || !verifier || state !== savedState) {
-    return c.redirect(purpose?.startsWith("mail-") ? "/?mail=failed" : "/?login=failed", 302);
+    return c.redirect(purpose?.startsWith("mail-") ? "/?mail=failed" : purpose === "cal" ? "/?cal=failed" : "/?login=failed", 302);
   }
+  if (purpose === "cal") return connectCalendar(c, code, verifier);
   if (purpose === "mail-personal" || purpose === "mail-business" || purpose === "mail-univ") return connectGmail(c, purpose.slice(5) as Slot, code, verifier);
   try {
     const tokens = await google(c).validateAuthorizationCode(code, verifier);
@@ -455,6 +476,58 @@ app.delete("/mail/:slot", async (c) => {
   return c.json({ ok: true });
 });
 
+/* ---------- Google カレンダー（個人のアカウント。予定の表示・追加・変更・削除） ---------- */
+
+app.get("/cal/connect", (c) => {
+  const state = generateState();
+  const verifier = generateCodeVerifier();
+  const url = google(c).createAuthorizationURL(state, verifier, ["openid", "email", "profile", CAL_EVENTS_SCOPE, CAL_LIST_SCOPE]);
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent select_account");
+  url.searchParams.set("include_granted_scopes", "true");
+  setCookie(c, "flick_oauth_state", state, cookieOpts(c));
+  setCookie(c, "flick_oauth_verifier", verifier, cookieOpts(c));
+  setCookie(c, "flick_oauth_purpose", "cal", cookieOpts(c));
+  return c.redirect(url.toString(), 302);
+});
+
+app.get("/cal/events", async (c) => {
+  const date = String(c.req.query("date") ?? "");
+  const days = Math.min(7, Math.max(1, Number(c.req.query("days") ?? 1) || 1));
+  if (!DATE.test(date)) return c.json({ error: "invalid_date" }, 400);
+  return c.json(await eventsForDay(c.env, c.get("user").id, date, days));
+});
+
+function writeResponse(c: any, r: WriteResult) {
+  if (r === "none") return c.json({ error: "not_connected" }, 400);
+  if (r === "expired") return c.json({ error: "expired" }, 409);
+  if (r === "forbidden") return c.json({ error: "forbidden" }, 403);
+  if (r === "not_found") return c.json({ error: "not_found" }, 404);
+  return c.json(r);
+}
+
+app.post("/cal/events", async (c) => {
+  const input = validateInput(await c.req.json().catch(() => null));
+  if (!input) return c.json({ error: "invalid_event" }, 400);
+  return writeResponse(c, await createEvent(c.env, c.get("user").id, input));
+});
+
+app.patch("/cal/events/:calendarId/:eventId", async (c) => {
+  const b = await c.req.json().catch(() => null);
+  const input = validateInput({ ...(b ?? {}), calendarId: c.req.param("calendarId") });
+  if (!input) return c.json({ error: "invalid_event" }, 400);
+  return writeResponse(c, await updateEvent(c.env, c.get("user").id, c.req.param("eventId"), input));
+});
+
+app.delete("/cal/events/:calendarId/:eventId", async (c) => {
+  return writeResponse(c, await deleteEvent(c.env, c.get("user").id, c.req.param("calendarId"), c.req.param("eventId")));
+});
+
+app.delete("/cal", async (c) => {
+  await c.env.DB.prepare("DELETE FROM cal_sources WHERE user_id = ?").bind(c.get("user").id).run();
+  return c.json({ ok: true });
+});
+
 const devOnly = (c: any) => c.env.E2E === "1" && ["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname);
 
 /** E2E テスト専用：メールにつないだことにする（E2E フラグ + localhost のときだけ） */
@@ -476,6 +549,15 @@ app.post("/mail/dev-connect", async (c) => {
 app.post("/mail/dev-cron", async (c) => {
   if (!devOnly(c)) return c.notFound();
   await runScheduled(c.env);
+  return c.json({ ok: true });
+});
+
+/** E2E テスト専用：カレンダーにつないだことにする（E2E フラグ + localhost のときだけ） */
+app.post("/cal/dev-connect", async (c) => {
+  if (!devOnly(c)) return c.notFound();
+  const b = await c.req.json<{ token?: string; holiday?: string }>().catch(() => ({}) as any);
+  await saveCalSource(c.env, c.get("user").id, "tester@gmail.com", String(b.token || "e2e-refresh"));
+  if (b.holiday && DATE.test(b.holiday)) mockSeedHoliday(c.get("user").id, b.holiday, "テストの祝日");
   return c.json({ ok: true });
 });
 

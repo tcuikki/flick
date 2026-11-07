@@ -8,14 +8,14 @@ import {
 } from "../mail";
 import { addPlanned } from "../store";
 import { haptic } from "../haptics";
-import { Check, ChevronLeft, MailIcon, Refresh } from "./Icons";
+import { Check, MailIcon, Refresh } from "./Icons";
 
-type Props = { open: boolean; onClose: () => void; toast: (text: string) => void };
+type Props = { active: boolean; toast: (text: string) => void };
 
 const SWIPE = 80;
 
-/** メールの枠（未着手・進行中・完了とは別）。個人・事業・大学の受信箱を新着順に、未読・既読つきで見せる */
-export function MailView({ open, onClose, toast }: Props) {
+/** メールのページ（下のタブ「メール」）。個人・事業・大学の受信箱を新着順に、未読・既読つきで見せる */
+export function MailView({ active, toast }: Props) {
   const sources = useMail((s) => s.sources);
   const items = useMail((s) => s.items);
   const checking = useMail((s) => s.checking);
@@ -31,22 +31,20 @@ export function MailView({ open, onClose, toast }: Props) {
   const [searchError, setSearchError] = useState("");
 
   useEffect(() => {
-    if (!open) return;
+    if (!active) return;
     // 未読があるところを最初に開く
     const first = SLOTS.find((s) => items.some((m) => m.slot === s && !m.read)) ?? SLOTS.find((s) => sources.some((x) => x.slot === s)) ?? "personal";
     setSlot(first);
     setQuery("");
     setSearched(null);
-    document.documentElement.classList.add("mail-open");
-    // 中身を開いているときの Esc は中身だけ閉じる（最新の状態を ref で見る）
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && (detailRef.current ? setDetail(null) : onClose());
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && detailRef.current && setDetail(null);
     window.addEventListener("keydown", onKey);
     return () => {
-      document.documentElement.classList.remove("mail-open");
       window.removeEventListener("keydown", onKey);
-      markOpened(); // 閉じたら「見た」ことにして、一覧の上のお知らせを消す
+      setDetail(null);
+      markOpened(); // ほかのページへ移ったら「見た」ことにして、今日のお知らせを消す
     };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const runSearch = async (s: Slot, q: string) => {
     const word = q.trim();
@@ -65,7 +63,7 @@ export function MailView({ open, onClose, toast }: Props) {
 
   // 検索中に枠を変えたら、その枠で同じ言葉を探し直す
   useEffect(() => {
-    if (open && searched && searched.slot !== slot) void runSearch(slot, searched.q);
+    if (active && searched && searched.slot !== slot) void runSearch(slot, searched.q);
   }, [slot]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const src = sources.find((s) => s.slot === slot) ?? null;
@@ -79,44 +77,26 @@ export function MailView({ open, onClose, toast }: Props) {
   };
 
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.section
-          className="mail-view"
-          role="dialog"
-          aria-modal="true"
-          aria-label="メール"
-          data-testid="mail-view"
-          initial={{ x: "100%" }}
-          animate={{ x: 0 }}
-          exit={{ x: "100%" }}
-          transition={{ type: "spring", stiffness: 380, damping: 38 }}
-        >
-          <header className="mail-head glass">
-            <motion.button className="mail-back" whileTap={{ scale: 0.88 }} onClick={onClose} aria-label="戻る" data-testid="mail-close">
-              <ChevronLeft size={22} />
-            </motion.button>
-            <div className="mail-head-text">
-              <h2>メール</h2>
+    <section className="mail-view" aria-label="メール" data-testid="mail-view">
+          <div className="mail-body">
+            <div className="mail-status-row">
               <span data-testid="mail-updated">
                 {lastUpdate ? `${dayTimeLabel(lastUpdate)} に更新・次は ${nextUpdateLabel()}` : `毎日 10:00 と 20:00 に更新`}
               </span>
+              {sources.length > 0 && (
+                <motion.button
+                  className={`mail-refresh ${checking ? "spin" : ""}`}
+                  whileTap={{ scale: 0.88 }}
+                  disabled={checking}
+                  aria-label="今すぐ更新"
+                  data-testid="mail-check"
+                  onClick={async () => { haptic("light"); toast(await refreshMailNow()); }}
+                >
+                  <Refresh size={18} />
+                </motion.button>
+              )}
             </div>
-            {sources.length > 0 && (
-              <motion.button
-                className={`mail-refresh ${checking ? "spin" : ""}`}
-                whileTap={{ scale: 0.88 }}
-                disabled={checking}
-                aria-label="今すぐ更新"
-                data-testid="mail-check"
-                onClick={async () => { haptic("light"); toast(await refreshMailNow()); }}
-              >
-                <Refresh size={19} />
-              </motion.button>
-            )}
-          </header>
 
-          <div className="mail-body">
             <div className="seg mail-seg" role="tablist" aria-label="メールの種類">
               {SLOTS.map((s) => (
                 <button key={s} role="tab" aria-selected={slot === s} className={`seg-btn ${slot === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSlot(s); }}>
@@ -215,9 +195,7 @@ export function MailView({ open, onClose, toast }: Props) {
           </div>
 
           <MailDetail item={detail} onClose={() => setDetail(null)} toast={toast} />
-        </motion.section>
-      )}
-    </AnimatePresence>
+    </section>
   );
 }
 

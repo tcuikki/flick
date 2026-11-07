@@ -63,3 +63,9 @@ export const ChevronRight = ({ size, className }: P) => (
 export const Refresh = ({ size, className }: P) => (
   <svg {...base(size)} className={className}><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 5v6h-6" /></svg>
 );
+export const Checklist = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}><path d="m4 6.5 1.6 1.6L8.6 5M4 13.5l1.6 1.6 3-3.1" /><path d="M11.5 7h8.5M11.5 14h8.5M5 19.5h15" /></svg>
+);
+export const Sun = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}><circle cx="12" cy="12" r="4" /><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M5.5 18.5l1.4-1.4M17.1 6.9l1.4-1.4" /></svg>
+);

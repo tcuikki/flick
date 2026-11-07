@@ -46,7 +46,7 @@ export async function encryptToken(env: Env, token: string) {
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await key(env), new TextEncoder().encode(token)));
   return `${b64(iv)}.${b64(ct)}`;
 }
-async function decryptToken(env: Env, enc: string) {
+export async function decryptToken(env: Env, enc: string) {
   const [iv, ct] = enc.split(".");
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(iv) }, await key(env), unb64(ct));
   return new TextDecoder().decode(pt);
@@ -67,7 +67,7 @@ const decodeEntities = (s: string) =>
 
 /* ---------- Gmail ---------- */
 
-async function googleAccess(env: Env, refreshToken: string) {
+export async function googleAccess(env: Env, refreshToken: string) {
   if (env.E2E === "1") {
     if (refreshToken === "expired") throw new ExpiredError("invalid_grant");
     return "e2e-access";
