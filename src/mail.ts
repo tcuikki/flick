@@ -2,8 +2,10 @@ import { useSyncExternalStore } from "react";
 import { api, ApiError } from "./api";
 
 export type MailKind = "action" | "check" | "info" | "ad";
+export type MailSource = "gmail" | "univ" | "icloud";
+export const SOURCE_LABEL: Record<MailSource, string> = { gmail: "Gmail", univ: "大学", icloud: "iCloud" };
 export type MailItem = {
-  id: string; threadId: string; source: "gmail" | "icloud"; from: string; fromName: string;
+  id: string; threadId: string; source: MailSource; from: string; fromName: string;
   subject: string; date: number; summary: string; snippet?: string; kind: MailKind; unread: boolean;
 };
 export type MailTask = { title: string; due_date: string | null; status: "todo"; note: string; mailId: string };
@@ -89,6 +91,6 @@ export function timeLabel(ms: number, now = new Date()) {
   return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
-/** Gmail で開くリンク（iCloud から転送されたメールも Gmail にある） */
+/** Gmail で開くリンク（大学・iCloud から転送されたメールも Gmail にある） */
 export const gmailLink = (threadId: string, email?: string) =>
   `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(email ?? "")}#all/${threadId}`;

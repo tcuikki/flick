@@ -11,7 +11,7 @@ import { TaskSheet } from "./components/TaskSheet";
 import { Tabs } from "./components/Tabs";
 import { NewTaskSheet } from "./components/NewTaskSheet";
 import { AiSheet } from "./components/AiSheet";
-import { MailView, countBy } from "./components/MailView";
+import { MailView, countBy, sourceSummary } from "./components/MailView";
 import { digestLabel, loadMail, useMail } from "./mail";
 import { primeKeyboard } from "./focus";
 import { ChevronRight, Google, MailIcon, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
@@ -305,7 +305,7 @@ export function App() {
               <span className="mail-banner-text">
                 <strong>{digestLabel(latest.created_at)} のメール {latest.items.length}件</strong>
                 <span>
-                  Gmail {countBy(latest).gmail}・iCloud {countBy(latest).icloud}
+                  {sourceSummary(latest)}
                   {countBy(latest).action > 0 && <em>要対応 {countBy(latest).action}</em>}
                 </span>
               </span>

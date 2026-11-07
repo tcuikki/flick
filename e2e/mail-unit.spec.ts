@@ -14,6 +14,14 @@ test.describe("メールの振り分け", () => {
     expect(sourceOf({ "x-forwarded-for": "ringo@icloud.com tester@gmail.com" })).toBe("icloud");
     expect(sourceOf({ to: "tester@gmail.com", "delivered-to": "tester@gmail.com" })).toBe("gmail");
     expect(sourceOf({ to: "icloud.com.fake@gmail.com" })).toBe("gmail");
+    expect(sourceOf({ to: "x@me.com.example.org" })).toBe("gmail");
+  });
+
+  test("大学（@tcu.ac.jp）宛てに届いて転送されたメールは「大学」。大学から Gmail 宛てに来たものは Gmail", () => {
+    expect(sourceOf({ to: "g2432011@tcu.ac.jp", "delivered-to": "tester@gmail.com" })).toBe("univ");
+    expect(sourceOf({ to: "全学生 <students@tcu.ac.jp>" })).toBe("univ");
+    expect(sourceOf({ from: "kyomu@tcu.ac.jp", to: "tester@gmail.com" })).toBe("gmail");
+    expect(sourceOf({ to: "x@tcu.ac.jp.example.com" })).toBe("gmail");
   });
 
   test("広告・SNS は Gmail のカテゴリで決め、そこからはタスクを作らない", () => {

@@ -313,7 +313,7 @@ html.sheet-open .fabs { transform: translateY(40px) scale(0.6); opacity: 0; poin
 html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 
 /* ---------- メール（未着手・進行中・完了とは別の枠） ---------- */
-:root { --gmail: #ea4335; --icloud: #0a84ff; }
+:root { --gmail: #ea4335; --univ: #0f6cbd; --icloud: #5ac8fa; }
 .mail-btn { position: relative; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); }
 .mail-badge { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px #fff; }
 .mail-badge.warn { background: var(--orange); }
@@ -353,6 +353,7 @@ html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; t
 .mail-connect h3, .mail-expired h3 { margin: 14px 0 8px; font-size: 19px; line-height: 1.4; letter-spacing: -0.01em; }
 .mail-connect p, .mail-expired p { margin: 0 0 6px; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
 .mail-hero-icon { width: 72px; height: 72px; margin: 0 auto; border-radius: 22px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, var(--gmail), #f59e0b 45%, var(--icloud)); box-shadow: 0 14px 30px rgba(10, 132, 255, 0.25); }
+.mail-howto + .mail-howto { margin-top: 10px; }
 .mail-howto { text-align: left; margin-top: 20px; padding: 14px 16px; border-radius: 18px; background: rgba(118, 118, 128, 0.08); font-size: 13.5px; line-height: 1.6; }
 .mail-howto ol { margin: 6px 0 0; padding-left: 20px; color: var(--ink-2); }
 .mail-expired { border: 1.5px solid rgba(255, 149, 0, 0.35); }
@@ -371,6 +372,7 @@ html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; t
 
 .mail-seg { margin-bottom: 14px; }
 .seg-pill.src-gmail { background: var(--gmail); }
+.seg-pill.src-univ { background: var(--univ); }
 .seg-pill.src-icloud { background: var(--icloud); }
 
 .mail-tasks { background: var(--card); border-radius: 22px; box-shadow: var(--card-shadow); padding: 14px; margin-bottom: 16px; }

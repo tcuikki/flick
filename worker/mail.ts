@@ -3,15 +3,17 @@ import type { Env } from "./index";
 /**
  * Gmail を読んで「この時間に来たメール」のまとめを作る。
  * - 読むだけ（gmail.readonly）。本文は読まず、差出人・件名・宛先・冒頭の一部（snippet）だけを使う
- * - iCloud メールは iCloud 側で Gmail へ転送してもらい、宛先（To / Delivered-To）が @icloud.com などなら「iCloud」に分ける
+ * - 大学（Outlook / Microsoft 365）と iCloud のメールは、それぞれ Gmail へ転送してもらい、
+ *   宛先（To / Cc / Delivered-To）が @tcu.ac.jp なら「大学」、@icloud.com などなら「iCloud」に分ける
  * - 10:00 と 18:00（日本時間）に Cron で実行。画面の「今すぐチェック」からも実行できる
  */
 
 export type MailKind = "action" | "check" | "info" | "ad";
+export type MailSource = "gmail" | "univ" | "icloud";
 export type MailItem = {
   id: string;
   threadId: string;
-  source: "gmail" | "icloud";
+  source: MailSource;
   from: string;
   fromName: string;
   subject: string;
@@ -28,7 +30,8 @@ export type Digest = { id: string; created_at: number; since: number; total: num
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const MAX_MAILS = 35; // Workers の1回あたりの外部通信数（無料プランは50）に収まるように
 const DAY = 86_400_000;
-const ICLOUD = /@(icloud|me|mac)\.com\b/i;
+const ICLOUD = /@(icloud|me|mac)\.com(?![\w.-])/i;
+const UNIV = /@tcu\.ac\.jp(?![\w.-])/i;
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
 
 /* ---------- リフレッシュトークンの暗号化（AES-GCM。鍵は GOOGLE_CLIENT_SECRET から導出） ---------- */
@@ -124,10 +127,15 @@ export async function gmailAddress(env: Env, accessTokenValue: string) {
 
 /* ---------- 振り分けと要約 ---------- */
 
-/** iCloud から Gmail へ転送されたメールかどうか（宛先が @icloud.com / @me.com / @mac.com） */
-export function sourceOf(headers: Record<string, string>): "gmail" | "icloud" {
+/**
+ * どのメールアドレス宛てに届いたか。転送されたメールは宛先が元のアドレスのまま残る。
+ * 大学（@tcu.ac.jp）→「大学」、@icloud.com / @me.com / @mac.com →「iCloud」、それ以外 →「Gmail」
+ */
+export function sourceOf(headers: Record<string, string>): MailSource {
   const to = [headers["to"], headers["cc"], headers["delivered-to"], headers["x-forwarded-for"], headers["x-forwarded-to"]].join(" ");
-  return ICLOUD.test(to) ? "icloud" : "gmail";
+  if (UNIV.test(to)) return "univ";
+  if (ICLOUD.test(to)) return "icloud";
+  return "gmail";
 }
 
 function parseFrom(v = "") {
@@ -311,7 +319,7 @@ function mockMails(since: number): { mails: RawMail[]; total: number } {
     headers: { from, to, subject, date: new Date(t + i * 60_000).toUTCString(), "delivered-to": "tester@gmail.com" },
   });
   const mails = [
-    mk(1, '"東京都市大学 教務課" <kyomu@tcu.ac.jp>', "tester@gmail.com", "【至急】履修登録の確認について", "11月10日までに履修登録の内容を確認し、提出してください。", ["INBOX", "UNREAD"]),
+    mk(1, '"東京都市大学 教務課" <kyomu@tcu.ac.jp>', "g2432011@tcu.ac.jp", "【至急】履修登録の確認について", "11月10日までに履修登録の内容を確認し、提出してください。", ["INBOX", "UNREAD"]),
     mk(2, "NTTデータ 採用担当 <recruit@example.co.jp>", "tester@gmail.com", "一次面接日程のご案内", "11月12日 10:00 からの一次面接についてご案内します。", ["INBOX", "UNREAD", "CATEGORY_UPDATES"]),
     mk(3, "Amazon.co.jp <store-news@amazon.co.jp>", "tester@gmail.com", "タイムセール開催中", "今だけ最大50%オフ", ["INBOX", "CATEGORY_PROMOTIONS"]),
     mk(4, "Apple <no_reply@email.apple.com>", "ringo@icloud.com", "iCloud ストレージの領収書", "ご購入ありがとうございます。iCloud+ 50GB", ["INBOX", "UNREAD"]),

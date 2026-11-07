@@ -12,7 +12,7 @@ test.afterEach(() => {
 const devConnect = (page: Page, token = "e2e-refresh") =>
   page.request.post("/api/mail/dev-connect", { headers: { origin: ORIGIN }, data: { token } });
 
-test.describe("メール（Gmail・iCloud）", () => {
+test.describe("メール（Gmail・大学・iCloud）", () => {
   test("つないでいないときは「Gmailをつなぐ」と iCloud の転送方法を出す", async ({ page }) => {
     await login(page);
     await page.goto("/");
@@ -21,6 +21,7 @@ test.describe("メール（Gmail・iCloud）", () => {
     const view = page.getByTestId("mail-view");
     await expect(view).toBeVisible();
     await expect(page.getByTestId("mail-connect-card")).toContainText("10:00 と 18:00");
+    await expect(page.getByTestId("mail-connect-card")).toContainText("outlook.office.com");
     await expect(page.getByTestId("mail-connect-card")).toContainText("iCloud.com");
     // メールの画面のあいだは、タスクの＋とタブは隠す（別の枠）
     await expect(page.locator(".fabs")).toHaveCSS("opacity", "0");
@@ -64,26 +65,20 @@ test.describe("メール（Gmail・iCloud）", () => {
     await expect(page.getByTestId("digest-hero")).toContainText("4件");
     await expect(page.getByTestId("digest-hero")).toContainText("要対応 1");
 
-    // Gmail：3件（広告は「広告・SNS」にまとめて閉じておく）
-    await expect(page.getByTestId("mail-tab-gmail")).toContainText("Gmail 3");
+    // Gmail・大学・iCloud に分かれる（iCloud は届いたときだけ枠が出る）
+    await expect(page.getByTestId("mail-tab-gmail")).toContainText("Gmail 2");
+    await expect(page.getByTestId("mail-tab-univ")).toContainText("大学 1");
     await expect(page.getByTestId("mail-tab-icloud")).toContainText("iCloud 1");
+
+    // 最初は「要対応」がある大学の枠を開く（@tcu.ac.jp 宛てに届いて Gmail に転送されたもの）
+    await expect(page.getByTestId("mail-tab-univ")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("mail-row")).toHaveCount(1);
     await expect(page.getByTestId("mail-group-action")).toContainText("【至急】履修登録の確認について");
     await expect(page.getByTestId("mail-group-action")).toContainText("東京都市大学 教務課");
-    await expect(page.getByTestId("mail-group-check")).toContainText("一次面接日程のご案内");
-    await expect(page.getByTestId("mail-group-ad")).not.toContainText("タイムセール");
-    await page.getByTestId("mail-ads-toggle").tap();
-    await expect(page.getByTestId("mail-group-ad")).toContainText("タイムセール");
     // メールをタップすると Gmail で開く
-    await expect(page.getByTestId("mail-row").first()).toHaveAttribute("href", /mail\.google\.com\/mail\/u\/\?authuser=tester%40gmail\.com#all\/t/);
-
-    // iCloud：@icloud.com 宛てに届いて Gmail に転送されたもの
-    await page.getByTestId("mail-tab-icloud").tap();
-    await expect(page.getByTestId("mail-row")).toHaveCount(1);
-    await expect(page.getByTestId("mail-row")).toContainText("iCloud ストレージの領収書");
-    await expect(page.getByTestId("mail-tasks")).toHaveCount(0);
+    await expect(page.getByTestId("mail-row").first()).toHaveAttribute("href", /mail\.google\.com\/mail\/u\/\?authuser=tester%40gmail\.com#all\/t1/);
 
     // やることの案 → 未着手に追加（メールの件名がメモに入る）
-    await page.getByTestId("mail-tab-gmail").tap();
     await expect(page.getByTestId("mail-tasks")).toContainText("履修登録の内容を確認して提出する");
     // メールの冒頭にある漢字だけで書かれているので「字を確認」は出ない
     await expect(page.getByTestId("mail-tasks").locator(".plan-warn")).toHaveCount(0);
@@ -91,6 +86,19 @@ test.describe("メール（Gmail・iCloud）", () => {
     await expect(page.getByTestId("mail-add-tasks")).toHaveText("追加しました");
     await expect.poll(async () => (await serverTasks(page)).map((t) => [t.title, t.status])).toEqual([["履修登録の内容を確認して提出する", "todo"]]);
     expect((await serverTasks(page))[0].note).toContain("【至急】履修登録の確認について");
+
+    // Gmail：2件（広告は「広告・SNS」にまとめて閉じておく）
+    await page.getByTestId("mail-tab-gmail").tap();
+    await expect(page.getByTestId("mail-group-check")).toContainText("一次面接日程のご案内");
+    await expect(page.getByTestId("mail-group-ad")).not.toContainText("タイムセール");
+    await page.getByTestId("mail-ads-toggle").tap();
+    await expect(page.getByTestId("mail-group-ad")).toContainText("タイムセール");
+    await expect(page.getByTestId("mail-tasks")).toHaveCount(0);
+
+    // iCloud：@icloud.com 宛てに届いて Gmail に転送されたもの
+    await page.getByTestId("mail-tab-icloud").tap();
+    await expect(page.getByTestId("mail-row")).toHaveCount(1);
+    await expect(page.getByTestId("mail-row")).toContainText("iCloud ストレージの領収書");
     await page.getByTestId("mail-close").tap();
     await expect(card(page, "履修登録の内容を確認して提出する")).toBeVisible();
   });
@@ -105,7 +113,7 @@ test.describe("メール（Gmail・iCloud）", () => {
     const banner = page.getByTestId("mail-banner");
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("のメール 4件");
-    await expect(banner).toContainText("Gmail 3・iCloud 1");
+    await expect(banner).toContainText("Gmail 2・大学 1・iCloud 1");
     await expect(banner).toContainText("要対応 1");
     await expect(page.getByTestId("mail-badge")).toBeVisible();
     await banner.tap();

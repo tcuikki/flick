@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  type Digest, type MailItem, type MailKind,
+  type Digest, type MailItem, type MailKind, type MailSource, SOURCE_LABEL,
   checkMailNow, connectMail, digestLabel, disconnectMail, gmailLink, markSeen, nextCheckLabel, timeLabel, useMail,
 } from "../mail";
 import { addPlanned } from "../store";
@@ -11,16 +11,26 @@ import { strangeKanji } from "../kanji";
 import { ChevronLeft, ChevronRight, MailIcon, Refresh, Sparkle } from "./Icons";
 
 type Props = { open: boolean; onClose: () => void; toast: (text: string) => void };
-type Source = "gmail" | "icloud";
+type Source = MailSource;
 
 const KIND_LABEL: Record<MailKind, string> = { action: "要対応", check: "確認", info: "お知らせ", ad: "広告・SNS" };
 const KIND_ORDER: MailKind[] = ["action", "check", "info", "ad"];
 
 export const countBy = (d: Digest) => ({
   gmail: d.items.filter((m) => m.source === "gmail").length,
+  univ: d.items.filter((m) => m.source === "univ").length,
   icloud: d.items.filter((m) => m.source === "icloud").length,
   action: d.items.filter((m) => m.kind === "action").length,
 });
+
+/** 表示する枠：Gmail と大学はいつも、iCloud は届いたときだけ */
+export const sourcesOf = (d: Digest): Source[] => (countBy(d).icloud > 0 ? ["gmail", "univ", "icloud"] : ["gmail", "univ"]);
+
+/** お知らせ用の短い件数（例「Gmail 8・大学 3」） */
+export const sourceSummary = (d: Digest) => {
+  const c = countBy(d);
+  return sourcesOf(d).map((s) => `${SOURCE_LABEL[s]} ${c[s]}`).join("・");
+};
 
 /** メールの枠（未着手・進行中・完了とは別）。10:00 / 18:00 のまとめを Gmail / iCloud に分けて見せる */
 export function MailView({ open, onClose, toast }: Props) {
@@ -49,11 +59,12 @@ export function MailView({ open, onClose, toast }: Props) {
     if (open && digest && !digest.seen_at) void markSeen(digest.id);
   }, [open, digest]);
 
-  // 件数の多いほうを最初に見せる
+  // 要対応があるところ → 届いているところ の順で最初に見せる
   useEffect(() => {
     if (!digest) return;
-    const c = countBy(digest);
-    setSource(c.gmail === 0 && c.icloud > 0 ? "icloud" : "gmail");
+    const list = sourcesOf(digest);
+    const has = (s: Source, k?: MailKind) => digest.items.some((m) => m.source === s && (!k || m.kind === k));
+    setSource(list.find((s) => has(s, "action")) ?? list.find((s) => has(s)) ?? "gmail");
   }, [digest?.id]);
 
   return (
@@ -131,16 +142,24 @@ function Connect() {
         <MailIcon size={38} />
       </motion.div>
       <h3>毎日 10:00 と 18:00 に、届いたメールをまとめます</h3>
-      <p>Gmail と iCloud に分けて、AI が「何のメールか」と「やること」を出します。メールは読むだけで、送信や削除はしません。</p>
+      <p>Gmail・大学・iCloud に分けて、AI が「何のメールか」と「やること」を出します。メールは読むだけで、送信や削除はしません。</p>
       <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={connectMail} data-testid="mail-connect">
         Gmailをつなぐ
       </motion.button>
+      <div className="mail-howto">
+        <strong>大学（Outlook）のメールも見るには</strong>
+        <ol>
+          <li>outlook.office.com に大学のアカウントでログインする</li>
+          <li>設定（歯車）→「メール」→「転送」で「転送を有効にする」をオンにし、このGmailのアドレスを入れる</li>
+          <li>「転送されたメッセージのコピーを保持する」にチェックを入れて保存する</li>
+        </ol>
+      </div>
       <div className="mail-howto">
         <strong>iCloud のメールも見るには</strong>
         <ol>
           <li>パソコンで iCloud.com を開き、「メール」を開く</li>
           <li>設定（歯車）→「転送」で、このGmailのアドレスへの転送をオンにする</li>
-          <li>転送されたメールは、自動で「iCloud」に分けて表示します</li>
+          <li>転送されたメールは、宛先を見て自動で「大学」「iCloud」に分けて表示します</li>
         </ol>
       </div>
     </div>
@@ -199,11 +218,11 @@ function DigestView({ digest, digests, onPick, source, setSource, email, toast }
         {digest.total > digest.items.length && <div className="digest-more">ほか {digest.total - digest.items.length} 件は Gmail で確認してください</div>}
       </motion.div>
 
-      <div className="seg seg-2 mail-seg" role="tablist" aria-label="メールの種類">
-        {(["gmail", "icloud"] as Source[]).map((s) => (
+      <div className={`seg ${sourcesOf(digest).length === 3 ? "" : "seg-2"} mail-seg`} role="tablist" aria-label="メールの種類">
+        {sourcesOf(digest).map((s) => (
           <button key={s} role="tab" aria-selected={source === s} className={`seg-btn ${source === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSource(s); }}>
             {source === s && <motion.span layoutId="mail-seg-pill" className={`seg-pill src-${s}`} transition={{ type: "spring", stiffness: 520, damping: 34 }} />}
-            <span>{s === "gmail" ? "Gmail" : "iCloud"} {s === "gmail" ? c.gmail : c.icloud}</span>
+            <span>{SOURCE_LABEL[s]} {c[s]}</span>
           </button>
         ))}
       </div>
@@ -253,7 +272,7 @@ function DigestView({ digest, digests, onPick, source, setSource, email, toast }
         </motion.div>
       )}
 
-      {items.length === 0 && <div className="mail-empty" data-testid="mail-none">この時間に届いた{source === "gmail" ? "Gmail" : "iCloud"}のメールはありません</div>}
+      {items.length === 0 && <div className="mail-empty" data-testid="mail-none">この時間に届いた{SOURCE_LABEL[source]}のメールはありません</div>}
 
       {groups.map((g) => (
         <section key={g.kind} className="mail-group" data-testid={`mail-group-${g.kind}`}>
