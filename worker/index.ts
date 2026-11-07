@@ -4,7 +4,7 @@ import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arct
 import { enrichMemo, planTasks, transcribe } from "./ai";
 import {
   GMAIL_SCOPE, MS_SCOPE, SLOTS, type Slot,
-  bodyOf, encryptToken, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
+  bodyOf, encryptToken, mockArrive, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
 } from "./mail";
 import {
   CAL_EVENTS_SCOPE, CAL_LIST_SCOPE, createEvent, deleteEvent, eventsForDay, mockSeedHoliday, saveCalSource, updateEvent, validateInput, type WriteResult,
@@ -129,7 +129,7 @@ async function saveSource(c: any, userId: string, slot: Slot, email: string, ref
     // 別のアカウントにつなぎ直したときに前のメールが混ざらないように
     c.env.DB.prepare("DELETE FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, slot),
   ]);
-  // つないだらすぐ読み込む（失敗しても次の 10:00 / 20:00 に読む）
+  // つないだらすぐ読み込む（失敗しても5分以内の自動更新で読む）
   c.executionCtx.waitUntil(refreshUser(c.env, userId).catch((e: unknown) => console.warn("first refresh failed", e)));
 }
 
@@ -402,7 +402,7 @@ app.get("/mail/connect/:slot", async (c) => {
     return c.redirect(url.toString(), 302);
   }
   const url = google(c).createAuthorizationURL(state, verifier, ["openid", "email", "profile", GMAIL_SCOPE]);
-  url.searchParams.set("access_type", "offline"); // 10:00 / 20:00 にサーバーから読むために必要
+  url.searchParams.set("access_type", "offline"); // 5分ごとにサーバーから読むために必要
   url.searchParams.set("prompt", "consent select_account"); // 事業用など別のアカウントも選べるように
   url.searchParams.set("include_granted_scopes", "true");
   setCookie(c, "flick_oauth_state", state, cookieOpts(c));
@@ -415,7 +415,7 @@ app.get("/mail", async (c) => {
   const uid = c.get("user").id;
   const { results: sources } = await c.env.DB.prepare("SELECT slot, provider, email, status, connected_at, checked_at FROM mail_sources WHERE user_id = ?").bind(uid).all();
   const { results: items } = await c.env.DB.prepare(
-    "SELECT slot, id, from_name, from_addr, subject, date, snippet, summary, task_title, task_due, link, read FROM mail_items WHERE user_id = ? ORDER BY date DESC",
+    "SELECT slot, id, from_name, from_addr, subject, date, snippet, summary, task_title, task_due, link, read, fetched_at FROM mail_items WHERE user_id = ? ORDER BY date DESC",
   ).bind(uid).all();
   return c.json({ sources, items: items.map(rowToItem) });
 });
@@ -424,7 +424,9 @@ app.post("/mail/check", async (c) => {
   const uid = c.get("user").id;
   const last = await c.env.DB.prepare("SELECT MAX(checked_at) AS t, COUNT(*) AS n FROM mail_sources WHERE user_id = ?").bind(uid).first<{ t: number | null; n: number }>();
   if (!last?.n) return c.json({ error: "not_connected" }, 400);
-  if (last.t && Date.now() - last.t < 60_000) return c.json({ error: "too_soon" }, 429);
+  // 画面を開いている間は1分ごとに自動で呼ばれる。短すぎる連続呼び出しだけ止める
+  // （エラーにはせず、読み込みを飛ばしたことだけ返す。画面は一覧を取り直す）
+  if (last.t && Date.now() - last.t < 15_000) return c.json({ skipped: true });
   return c.json({ result: await refreshUser(c.env, uid) });
 });
 
@@ -545,7 +547,15 @@ app.post("/mail/dev-connect", async (c) => {
   return c.json({ ok: true });
 });
 
-/** E2E テスト専用：10:00 / 20:00 の自動更新と同じ処理を今すぐ動かす */
+/** E2E テスト専用：その人の個人の枠に、新しいメールが1通届いたことにする */
+app.post("/mail/dev-new", async (c) => {
+  if (!devOnly(c)) return c.notFound();
+  const src = await c.env.DB.prepare("SELECT email FROM mail_sources WHERE user_id = ? AND slot = 'personal'").bind(c.get("user").id).first<{ email: string }>();
+  if (src) mockArrive(src.email);
+  return c.json({ ok: true });
+});
+
+/** E2E テスト専用：5分ごとの自動更新と同じ処理を今すぐ動かす */
 app.post("/mail/dev-cron", async (c) => {
   if (!devOnly(c)) return c.notFound();
   await runScheduled(c.env);
@@ -569,7 +579,7 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  /** 10:00 と 20:00（日本時間）にメールを読み込む（wrangler.jsonc の triggers.crons） */
+  /** 5分ごとにメールを読み込む（wrangler.jsonc の triggers.crons）。画面を開いている間は、画面からも1分ごとに読み込む */
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(runScheduled(env));
   },

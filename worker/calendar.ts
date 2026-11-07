@@ -19,8 +19,10 @@ export type CalInfo = { id: string; title: string; color: string; primary: boole
 export type CalEvent = {
   id: string; calendarId: string; title: string; start: string; end: string; allDay: boolean;
   location: string; description: string; color: string; editable: boolean; recurring: boolean;
+  /** Google カレンダーの予定の色（"1"〜"11"）。"" はカレンダーの色のまま */
+  colorId: string;
 };
-export type EventInput = { calendarId: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string };
+export type EventInput = { calendarId: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string; colorId: string };
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
@@ -54,7 +56,9 @@ export function validateInput(b: any): EventInput | null {
   if (!title) return null;
   if (allDay ? !(DATE.test(start) && DATE.test(end)) : !(DATETIME.test(start) && DATETIME.test(end))) return null;
   if (!(end > start)) return null;
-  return { calendarId, title, start, end, allDay, location: String(b?.location ?? "").slice(0, 500), description: String(b?.description ?? "").slice(0, 5000) };
+  const colorId = String(b?.colorId ?? "");
+  if (!(colorId === "" || colorId in EVENT_COLORS)) return null;
+  return { calendarId, title, start, end, allDay, location: String(b?.location ?? "").slice(0, 500), description: String(b?.description ?? "").slice(0, 5000), colorId };
 }
 
 const toGoogleTime = (v: string, allDay: boolean) => (allDay ? { date: v, dateTime: null, timeZone: null } : { dateTime: `${v}:00${OFFSET}`, timeZone: TZ, date: null });
@@ -64,6 +68,8 @@ const toGoogleBody = (e: EventInput) => ({
   description: e.description,
   start: toGoogleTime(e.start, e.allDay),
   end: toGoogleTime(e.end, e.allDay),
+  // null を送ると色を外して「カレンダーの色」に戻る
+  colorId: e.colorId || null,
 });
 
 /* ---------- つないでいるアカウント ---------- */
@@ -156,6 +162,7 @@ function toEvent(e: any, cal: CalInfo): CalEvent | null {
     color: EVENT_COLORS[String(e.colorId)] ?? cal.color,
     editable: cal.writable && ownEvent && !e.locked,
     recurring: Boolean(e.recurringEventId),
+    colorId: e.colorId && String(e.colorId) in EVENT_COLORS ? String(e.colorId) : "",
   };
 }
 
@@ -307,7 +314,8 @@ async function mockWrite(env: Env, userId: string, op: "create" | "update" | "de
   const event: CalEvent = {
     id: prev?.id ?? `mock${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`,
     calendarId: input.calendarId, title: input.title, start: input.start, end: input.end, allDay: input.allDay,
-    location: input.location, description: input.description, color: cal.color, editable: true, recurring: false,
+    location: input.location, description: input.description, color: EVENT_COLORS[input.colorId] ?? cal.color, editable: true, recurring: false,
+    colorId: input.colorId,
   };
   mockStore.set(userId, [...list.filter((e) => e.id !== event.id), event]);
   return { event };
@@ -316,6 +324,6 @@ async function mockWrite(env: Env, userId: string, op: "create" | "update" | "de
 /** E2E 用：読むだけのカレンダー（祝日）の予定を置く */
 export function mockSeedHoliday(userId: string, date: string, title: string) {
   const list = mockStore.get(userId) ?? [];
-  list.push({ id: `hol${date}`, calendarId: "holidays", title, start: date, end: addDays(date, 1), allDay: true, location: "", description: "", color: "#0b8043", editable: false, recurring: false });
+  list.push({ id: `hol${date}`, calendarId: "holidays", title, start: date, end: addDays(date, 1), allDay: true, location: "", description: "", color: "#0b8043", editable: false, recurring: false, colorId: "" });
   mockStore.set(userId, list);
 }

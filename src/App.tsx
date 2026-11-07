@@ -15,13 +15,15 @@ import { AiSheet } from "./components/AiSheet";
 import { MailView } from "./components/MailView";
 import { TodayView } from "./components/TodayView";
 import { EventSheet, type EventDraft } from "./components/EventSheet";
-import { loadMail, newUnread, useMail } from "./mail";
+import { SLOTS, SLOT_LABEL, autoCheck, loadMail, newUnread, useMail } from "./mail";
 import { clearCalCache, loadDay, today } from "./calendar";
 import { primeKeyboard } from "./focus";
 import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
 type Toast = { id: number; text: string; undo?: () => void };
 const MIN_SKELETON_MS = 450;
+/** 画面を開いている間のメールの自動更新の間隔 */
+const MAIL_POLL_MS = 60_000;
 const DIR: Record<Status, number> = { todo: 0, doing: 1, done: 2 };
 
 export function App() {
@@ -52,7 +54,6 @@ export function App() {
   const mailItems = useMail((m) => m.items);
   const openedAt = useMail((m) => m.openedAt);
   const fresh = useMemo(() => newUnread({ items: mailItems, openedAt }), [mailItems, openedAt]);
-  const lastUpdate = useMail((m) => Math.max(0, ...m.sources.map((s) => s.checked_at ?? 0)));
 
   const goPage = useCallback((p: Page) => {
     setPageState((cur) => {
@@ -123,14 +124,36 @@ export function App() {
     [setTab, goPage, showToast],
   );
 
-  /* ---------- メール（10:00 / 18:00 のまとめ） ---------- */
+  /* ---------- メール：開いている間は自動で読み込み、届いたら知らせる ---------- */
   useEffect(() => {
     if (auth !== "in") return;
-    void loadMail();
-    const onVis = () => document.visibilityState === "visible" && void loadMail();
+    let alive = true;
+    const run = async () => {
+      if (document.visibilityState !== "visible") return;
+      const arrived = await autoCheck();
+      if (!alive || !arrived.length) return;
+      haptic("light");
+      const one = arrived.length === 1 ? arrived[0] : null;
+      showToast(
+        one
+          ? `新着メール（${SLOT_LABEL[one.slot]}）：${one.subject.slice(0, 28)}`
+          : `新着メール ${arrived.length}件（${SLOTS.filter((s) => arrived.some((m) => m.slot === s)).map((s) => `${SLOT_LABEL[s]} ${arrived.filter((m) => m.slot === s).length}`).join("・")}）`,
+      );
+    };
+    void loadMail().then(run);
+    const timer = setInterval(run, MAIL_POLL_MS);
+    const onVis = () => void run();
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [auth]);
+    window.addEventListener("focus", onVis);
+    window.addEventListener("online", onVis);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+      window.removeEventListener("online", onVis);
+    };
+  }, [auth, showToast]);
 
   useEffect(() => {
     drainBootQueue();
@@ -378,7 +401,7 @@ export function App() {
               transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
               {page === "today" && (
-                <TodayView fresh={fresh} mailUpdated={lastUpdate} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
+                <TodayView fresh={fresh} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
               )}
               {page === "mail" && <MailView active toast={showToast} />}
               {page === "tasks" && (

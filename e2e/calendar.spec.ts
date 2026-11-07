@@ -19,7 +19,7 @@ const add = (page: Page, title: string, date: string, s: string, e: string, extr
 async function serverEvents(page: Page, date: string) {
   const res = await page.request.get(`/api/cal/events?date=${date}`);
   expect(res.ok()).toBeTruthy();
-  return (await res.json()).events as { id: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string }[];
+  return (await res.json()).events as { id: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string; colorId: string }[];
 }
 const ev = (page: Page, title: string) => page.locator(`[data-testid=event][data-title="${title}"]`);
 
@@ -146,6 +146,45 @@ test.describe("今日（Google カレンダー）", () => {
     await page.getByTestId("event-save").tap();
     await expect(page.getByTestId("allday").getByTestId("event")).toHaveText("ゼミ（発表）");
     expect((await serverEvents(page, today))[0]).toMatchObject({ allDay: true, start: today, end: isoDate(1) });
+  });
+
+  test("色を選べる（バイト=ピーコック、ジム=ローズ…）。Google カレンダーの予定の色として保存される", async ({ page }) => {
+    await login(page);
+    const today = isoDate(0);
+    await connect(page);
+    await add(page, "ジム", today, "08:00", "09:00");
+    await page.goto("/");
+    await ready(page);
+    // 色を付けていない予定は「ローズ」（カレンダーの色）で出す
+    const bg = (title: string) => ev(page, title).evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(await bg("ジム")).toContain("rgb(224, 96, 126)");
+
+    await page.getByTestId("event-add").tap();
+    await page.getByTestId("event-title").fill("自家製麺いけだ");
+    const colors = page.getByTestId("event-colors").getByRole("radio");
+    await expect(colors).toHaveCount(7);
+    await expect(colors.locator("b")).toHaveText(["バイト", "ジム", "就活準備・AIHP・レポート", "就活", "遊び", "大学", "給料日"]);
+    await expect(page.getByTestId("color-default")).toHaveAttribute("aria-checked", "true");
+    await page.getByTestId("color-7").tap();
+    await expect(page.getByTestId("color-7")).toHaveAttribute("aria-checked", "true");
+    await page.getByTestId("event-save").tap();
+    await expect(ev(page, "自家製麺いけだ")).toBeVisible();
+    expect(await bg("自家製麺いけだ")).toContain("rgb(3, 155, 229)");
+    expect((await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ")).toMatchObject({ colorId: "7" });
+
+    // ほかの色も選べる。ローズに戻すと色を外す（カレンダーの色）
+    await ev(page, "自家製麺いけだ").tap();
+    await page.getByTestId("event-colors-more").tap();
+    await expect(page.getByTestId("event-colors").getByRole("radio")).toHaveCount(12);
+    await page.getByTestId("color-default").tap();
+    await page.getByTestId("event-save").tap();
+    await expect.poll(async () => (await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ")?.colorId).toBe("");
+
+    // おかしな色は弾く
+    const r = await page.request.post("/api/cal/events", {
+      headers: H, data: { calendarId: "primary", title: "x", start: `${today}T10:00`, end: `${today}T11:00`, allDay: false, colorId: "99" },
+    });
+    expect(r.status()).toBe(400);
   });
 
   test("削除は2回押して確定。押すと Google カレンダーからも消える", async ({ page }) => {

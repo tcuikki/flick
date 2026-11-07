@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  type CalEvent, connectCalendar, dateLabel, eventsOn, hmOf, layoutDay, loadDay, relLabel, shiftDate, today, useCal,
+  type CalEvent, connectCalendar, dateLabel, evColor, eventsOn, hmOf, layoutDay, loadDay, relLabel, shiftDate, today, useCal,
 } from "../calendar";
-import { type MailItem, SLOTS, SLOT_LABEL, dayTimeLabel } from "../mail";
+import { type MailItem, SLOTS, SLOT_LABEL } from "../mail";
 import { haptic } from "../haptics";
 import { Calendar, ChevronLeft, ChevronRight, MailIcon, Plus } from "./Icons";
 import type { EventDraft } from "./EventSheet";
@@ -13,16 +13,16 @@ const EMPTY: CalEvent[] = [];
 
 type Props = {
   fresh: MailItem[];
-  mailUpdated: number;
   onOpenMail: () => void;
   onEdit: (d: EventDraft) => void;
 };
 
 /** 今日：新着メールのお知らせ + Google カレンダーの1日（縦の時間割） */
-export function TodayView({ fresh, mailUpdated, onOpenMail, onEdit }: Props) {
+export function TodayView({ fresh, onOpenMail, onEdit }: Props) {
   const [date, setDate] = useState(today);
   const [dir, setDir] = useState(0);
   const source = useCal((s) => s.source);
+  const calendars = useCal((s) => s.calendars);
   const dayEvents = useCal((s) => s.days[date] ?? EMPTY);
   const loaded = useCal((s) => date in s.days);
   const failed = useCal((s) => Boolean(s.failed[date]));
@@ -120,7 +120,6 @@ export function TodayView({ fresh, mailUpdated, onOpenMail, onEdit }: Props) {
                 {SLOTS.filter((s) => fresh.some((m) => m.slot === s)).map((s) => (
                   <b key={s} className={`src-chip src-${s}`} data-testid={`mail-banner-${s}`}>{SLOT_LABEL[s]} {fresh.filter((m) => m.slot === s).length}</b>
                 ))}
-                {mailUpdated > 0 && <i>{dayTimeLabel(mailUpdated)} 更新</i>}
               </span>
             </span>
             <ChevronRight size={18} className="today-mail-chev" />
@@ -191,7 +190,7 @@ export function TodayView({ fresh, mailUpdated, onOpenMail, onEdit }: Props) {
             <ul className="allday" data-testid="allday">
               {allDay.map((ev) => (
                 <li key={`${ev.calendarId}:${ev.id}`}>
-                  <button className="allday-ev" style={{ "--ev": ev.color } as React.CSSProperties} data-testid="event" data-title={ev.title}
+                  <button className="allday-ev" style={{ "--ev": evColor(ev, calendars) } as React.CSSProperties} data-testid="event" data-title={ev.title}
                     onClick={() => { haptic("light"); onEdit({ mode: "edit", ev }); }}>
                     {ev.title}
                   </button>
@@ -230,7 +229,7 @@ export function TodayView({ fresh, mailUpdated, onOpenMail, onEdit }: Props) {
                         top: p.top, height: p.height,
                         left: `calc(var(--tl-gutter) + (100% - var(--tl-gutter) - 6px) * ${p.col / p.cols})`,
                         width: `calc((100% - var(--tl-gutter) - 6px) / ${p.cols} - 3px)`,
-                        "--ev": p.ev.color,
+                        "--ev": evColor(p.ev, calendars),
                       } as React.CSSProperties}
                       initial={{ opacity: 0, scale: 0.94 }}
                       animate={{ opacity: 1, scale: 1 }}

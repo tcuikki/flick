@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useDragControls } from "motion/react";
 import {
-  type CalEvent, CalWriteError, atMinutes, createEvent, dateLabel, deleteEvent, shiftDate, updateEvent, useCal, writeErrorText,
+  type CalEvent, type ColorChoice, CalWriteError, MAIN_COLORS, OTHER_COLORS, atMinutes, colorChoice, createEvent, dateLabel, deleteEvent, evColor,
+  shiftDate, updateEvent, useCal, writeErrorText,
 } from "../calendar";
 import { haptic } from "../haptics";
 import { Trash } from "./Icons";
@@ -11,14 +12,14 @@ type Props = { draft: EventDraft | null; onClose: () => void; toast: (text: stri
 
 type Form = {
   title: string; allDay: boolean; date: string; endDate: string; startTime: string; endTime: string;
-  location: string; description: string; calendarId: string;
+  location: string; description: string; calendarId: string; colorId: string;
 };
 
 function initialForm(d: EventDraft, defaultCal: string): Form {
   if (d.mode === "new") {
     const s = atMinutes(d.date, d.startMin);
     const e = atMinutes(d.date, Math.min(d.startMin + 60, 1439));
-    return { title: "", allDay: false, date: d.date, endDate: d.date, startTime: s.slice(11), endTime: e.slice(11), location: "", description: "", calendarId: defaultCal };
+    return { title: "", allDay: false, date: d.date, endDate: d.date, startTime: s.slice(11), endTime: e.slice(11), location: "", description: "", calendarId: defaultCal, colorId: "" };
   }
   const ev = d.ev;
   return {
@@ -28,7 +29,7 @@ function initialForm(d: EventDraft, defaultCal: string): Form {
     endDate: ev.allDay ? shiftDate(ev.end.slice(0, 10), -1) : ev.end.slice(0, 10),
     startTime: ev.allDay ? "09:00" : ev.start.slice(11, 16),
     endTime: ev.allDay ? "10:00" : ev.end.slice(11, 16),
-    location: ev.location, description: ev.description, calendarId: ev.calendarId,
+    location: ev.location, description: ev.description, calendarId: ev.calendarId, colorId: ev.colorId,
   };
 }
 
@@ -42,6 +43,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
   const [saving, setSaving] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const [error, setError] = useState("");
+  const [moreColors, setMoreColors] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -50,6 +52,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
     setSaving(false);
     setConfirmDel(false);
     setError("");
+    setMoreColors(draft.mode === "edit" && OTHER_COLORS.some((c) => c.id === draft.ev.colorId));
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     document.documentElement.classList.add("sheet-open");
@@ -69,7 +72,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
     let end = f.allDay ? shiftDate(f.endDate < f.date ? f.date : f.endDate, 1) : `${f.endDate < f.date ? f.date : f.endDate}T${f.endTime}`;
     // 終わりが始まり以前なら、日をまたぐ予定とみなす（例：22:00〜2:00）
     if (!f.allDay && end <= start) end = `${shiftDate(f.date, 1)}T${f.endTime}`;
-    return { calendarId: f.calendarId, title: f.title.trim(), start, end, allDay: f.allDay, location: f.location.trim(), description: f.description };
+    return { calendarId: f.calendarId, title: f.title.trim(), start, end, allDay: f.allDay, location: f.location.trim(), description: f.description, colorId: f.colorId };
   };
 
   const save = async () => {
@@ -131,7 +134,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
             <div className="grabber-zone" onPointerDown={(e) => drag.start(e)}><div className="grabber" /></div>
 
             <div className="event-cal-row">
-              <i className="event-cal-dot" style={{ background: ev?.color ?? calendars.find((c) => c.id === form.calendarId)?.color ?? "var(--blue)" }} />
+              <i className="event-cal-dot" style={{ background: evColor({ colorId: form.colorId, color: ev?.color ?? "", calendarId: form.calendarId }, calendars) }} />
               <span>{calName(form.calendarId)}</span>
               {ev?.recurring && !readOnly && <em>繰り返しの予定：この日の1回だけ変わります</em>}
             </div>
@@ -212,6 +215,16 @@ export function EventSheet({ draft, onClose, toast }: Props) {
                 )}
               </div>
 
+              <div className="event-colors" role="radiogroup" aria-label="色" data-testid="event-colors">
+                {(moreColors ? [...MAIN_COLORS, ...OTHER_COLORS] : MAIN_COLORS).map((c) => (
+                  <ColorChip key={c.id || "default"} c={c} on={form.colorId === c.id} disabled={readOnly} onPick={() => { haptic(); up({ colorId: c.id }); }} />
+                ))}
+                {!moreColors && !readOnly && (
+                  <button type="button" className="color-more" onClick={() => setMoreColors(true)} data-testid="event-colors-more">ほかの色</button>
+                )}
+              </div>
+              {readOnly && <p className="event-color-name">{colorChoice(form.colorId).name}</p>}
+
               <input
                 className="sheet-note event-input"
                 value={form.location}
@@ -262,5 +275,28 @@ export function EventSheet({ draft, onClose, toast }: Props) {
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+/** 色を1つ選ぶボタン（色の丸 + 何に使っている色か） */
+function ColorChip({ c, on, disabled, onPick }: { c: ColorChoice; on: boolean; disabled: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={on}
+      aria-label={`${c.name}${c.use ? `（${c.use}）` : ""}`}
+      className={`color-chip ${on ? "on" : ""}`}
+      style={{ "--c": c.hex } as React.CSSProperties}
+      disabled={disabled && !on}
+      data-testid={`color-${c.id || "default"}`}
+      onClick={onPick}
+    >
+      <i className="color-dot">{on && <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" /></svg>}</i>
+      <span className="color-text">
+        <b>{c.use || c.name}</b>
+        {c.use && <small>{c.name}</small>}
+      </span>
+    </button>
   );
 }

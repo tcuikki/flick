@@ -328,7 +328,6 @@ html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 .mail-refresh.spin svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .mail-body { padding: 0 0 20px; }
-.mail-status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 4px 10px 6px; font-size: 12.5px; color: var(--ink-2); }
 
 .mail-seg { margin-bottom: 14px; }
 .seg-pill.src-personal { background: var(--personal); }
@@ -522,3 +521,18 @@ html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 .event-error { margin: 12px 4px 0; font-size: 13.5px; font-weight: 700; color: var(--red); }
 .event-sheet .primary-btn { flex: 1; }
 .del-btn.confirm { width: auto; padding: 0 16px; gap: 6px; display: inline-flex; align-items: center; color: #fff; background: var(--red); font-weight: 800; }
+
+/* 予定の色（用途つき） */
+.event-colors { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.color-chip {
+  display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 12px 0 7px; border-radius: 19px;
+  background: rgba(118, 118, 128, 0.08); box-shadow: inset 0 0 0 1.5px transparent; transition: box-shadow 0.2s, background 0.2s;
+}
+.color-chip.on { background: color-mix(in srgb, var(--c) 12%, #fff); box-shadow: inset 0 0 0 1.5px var(--c); }
+.color-chip:disabled { opacity: 0.35; }
+.color-dot { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--c); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06); }
+.color-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.1; }
+.color-text b { font-size: 13px; font-weight: 800; color: var(--ink); }
+.color-text small { font-size: 10.5px; font-weight: 600; color: var(--ink-2); }
+.color-more { height: 38px; padding: 0 12px; border-radius: 19px; font-size: 13px; font-weight: 700; color: var(--blue); }
+.event-color-name { margin: 6px 4px 0; font-size: 12.5px; color: var(--ink-2); }

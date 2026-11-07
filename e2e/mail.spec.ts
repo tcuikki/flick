@@ -25,7 +25,9 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.getByTestId("nav-mail").tap();
     await expect(page.getByTestId("mail-view")).toBeVisible();
     await expect(page.getByTestId("mail-view").getByRole("tab")).toHaveText(["個人", "事業", "大学"]);
-    await expect(page.getByTestId("mail-updated")).toHaveText("毎日 10:00 と 20:00 に更新");
+    // 更新の時刻は出さない（自動で読み込むので）
+    await expect(page.getByTestId("mail-updated")).toHaveCount(0);
+    await expect(page.getByTestId("mail-check")).toHaveCount(0);
     await expect(page.getByTestId("mail-connect-card-personal")).toContainText("個人のGmailをつなぐ");
     await page.getByTestId("mail-tab-business").tap();
     await expect(page.getByTestId("mail-connect-card-business")).toContainText("AIHP");
@@ -84,7 +86,6 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(page.getByTestId("mail-unread-personal")).toHaveText("2");
     await expect(page.getByTestId("mail-unread-business")).toHaveText("1");
     await expect(page.getByTestId("mail-unread-univ")).toHaveText("1");
-    await expect(page.getByTestId("mail-updated")).toContainText("に更新・次は");
 
     // 個人：新着順（面接 → カード → タイムセール）。分類の見出しは無い
     await page.getByTestId("mail-tab-personal").tap();
@@ -211,6 +212,49 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(page.getByTestId("mail-banner")).toHaveCount(0);
   });
 
+  test("開いている間は自動で読み込み、届いたメールはボタンを押さなくても出る（トーストと今日のお知らせ）", async ({ page }) => {
+    await login(page);
+    const email = `auto${Date.now()}@gmail.com`;
+    await page.request.post("/api/mail/dev-connect", { headers: { origin: ORIGIN }, data: { slot: "personal", email } });
+    await page.goto("/");
+    await ready(page);
+    // 開いたときに自動で読み込む（↻ を押さなくても）
+    await expect(page.getByTestId("mail-banner")).toContainText("新着メールが 2件 来ています");
+    await expect(page.getByTestId("mail-banner")).not.toContainText("更新");
+    await page.getByTestId("nav-mail").tap();
+    await page.getByTestId("nav-today").tap();
+    await expect(page.getByTestId("mail-banner")).toHaveCount(0);
+
+    // 新しいメールが1通届く → サーバーの自動更新（5分ごと）→ 画面は1分ごと・戻ったときに読み直す
+    await page.request.post("/api/mail/dev-new", { headers: { origin: ORIGIN } });
+    await cron(page);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(page.getByTestId("toast").filter({ hasText: "新着メール（個人）：新しい予定の招待" })).toBeVisible();
+    await expect(page.getByTestId("mail-banner")).toContainText("新着メールが 1件 来ています");
+    await expect(page.getByTestId("mail-badge")).toHaveText("1");
+  });
+
+  test("画面を開いている間は1分ごとに自動で読み込む", async ({ page }) => {
+    await login(page);
+    await devConnect(page, "personal");
+    await page.clock.install();
+    let checks = 0;
+    let lists = 0;
+    page.on("request", (r) => { if (r.url().endsWith("/api/mail/check") && r.method() === "POST") checks++; });
+    page.on("requestfinished", (r) => { if (r.url().endsWith("/api/mail") && r.method() === "GET") lists++; });
+    await page.goto("/");
+    await ready(page);
+    // 開いたとき：一覧 → 読み込み → 一覧
+    await expect.poll(() => checks).toBe(1);
+    await expect.poll(() => lists).toBe(2);
+    // 1分たつごとに、もう一度読み込む（前の読み込みが終わってから次の1分を進める）
+    await page.clock.runFor(61_000);
+    await expect.poll(() => checks).toBe(2);
+    await expect.poll(() => lists).toBe(3);
+    await page.clock.runFor(61_000);
+    await expect.poll(() => checks).toBe(3);
+  });
+
   test("2回目の更新では、新しいメールだけ読み込み、既読は保ったまま", async ({ page }) => {
     await login(page);
     await devConnect(page, "personal");
@@ -287,8 +331,8 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(page.getByTestId("mail-expired")).toContainText("個人との接続が切れました");
     await page.getByTestId("mail-tab-univ").tap();
     await expect(rows(page)).toHaveCount(2);
-    // 1分以内の「今すぐ更新」は待ってもらう
-    expect((await page.request.post("/api/mail/check", { headers: { origin: ORIGIN } })).status()).toBe(429);
+    // 続けざまの読み込み（15秒以内）は Gmail を読みに行かずに飛ばす
+    expect(await (await page.request.post("/api/mail/check", { headers: { origin: ORIGIN } })).json()).toEqual({ skipped: true });
   });
 
   test("メールの API はログインが必要で、他人のメールの既読は変えられない。トークンは返さない", async ({ page, playwright }) => {

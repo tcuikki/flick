@@ -3,12 +3,12 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useDragControls, useMotionValue, useTransform } from "motion/react";
 import {
   type MailItem, type Slot, SLOTS, SLOT_LABEL,
-  connectSlot, dayTimeLabel, disconnectSlot, fetchBody, fullTime, listTime, markOpened, nextUpdateLabel,
-  readAll, refreshMailNow, searchMail, setRead, useMail,
+  connectSlot, disconnectSlot, fetchBody, fullTime, listTime, markOpened,
+  readAll, searchMail, setRead, useMail,
 } from "../mail";
 import { addPlanned } from "../store";
 import { haptic } from "../haptics";
-import { Check, MailIcon, Refresh } from "./Icons";
+import { Check, MailIcon } from "./Icons";
 
 type Props = { active: boolean; toast: (text: string) => void };
 
@@ -18,7 +18,6 @@ const SWIPE = 80;
 export function MailView({ active, toast }: Props) {
   const sources = useMail((s) => s.sources);
   const items = useMail((s) => s.items);
-  const checking = useMail((s) => s.checking);
   const [slot, setSlot] = useState<Slot>("personal");
   const [detail, setDetail] = useState<MailItem | null>(null);
   const detailRef = useRef<MailItem | null>(null);
@@ -69,7 +68,6 @@ export function MailView({ active, toast }: Props) {
   const src = sources.find((s) => s.slot === slot) ?? null;
   const list = items.filter((m) => m.slot === slot).sort((a, b) => b.date - a.date);
   const unread = (s: Slot) => items.filter((m) => m.slot === s && !m.read).length;
-  const lastUpdate = Math.max(0, ...sources.map((s) => s.checked_at ?? 0));
   const inSearch = Boolean(searched && searched.slot === slot);
   const openItem = (m: MailItem) => {
     setDetail(m);
@@ -79,24 +77,6 @@ export function MailView({ active, toast }: Props) {
   return (
     <section className="mail-view" aria-label="メール" data-testid="mail-view">
           <div className="mail-body">
-            <div className="mail-status-row">
-              <span data-testid="mail-updated">
-                {lastUpdate ? `${dayTimeLabel(lastUpdate)} に更新・次は ${nextUpdateLabel()}` : `毎日 10:00 と 20:00 に更新`}
-              </span>
-              {sources.length > 0 && (
-                <motion.button
-                  className={`mail-refresh ${checking ? "spin" : ""}`}
-                  whileTap={{ scale: 0.88 }}
-                  disabled={checking}
-                  aria-label="今すぐ更新"
-                  data-testid="mail-check"
-                  onClick={async () => { haptic("light"); toast(await refreshMailNow()); }}
-                >
-                  <Refresh size={18} />
-                </motion.button>
-              )}
-            </div>
-
             <div className="seg mail-seg" role="tablist" aria-label="メールの種類">
               {SLOTS.map((s) => (
                 <button key={s} role="tab" aria-selected={slot === s} className={`seg-btn ${slot === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSlot(s); }}>
@@ -164,7 +144,7 @@ export function MailView({ active, toast }: Props) {
                         <span>受信箱の新しい{list.length}件</span>
                       )}
                     </div>
-                    {list.length === 0 && <div className="mail-empty" data-testid="mail-none">まだメールを読み込んでいません。右上の ↻ で今すぐ更新できます。</div>}
+                    {list.length === 0 && <div className="mail-empty" data-testid="mail-none">受信箱にメールはまだありません。届くと自動でここに出ます。</div>}
                     {list.length > 0 && (
                       <ul className="mail-list" data-testid="mail-list">
                         <AnimatePresence initial={false}>
@@ -224,7 +204,7 @@ function ConnectCard({ slot }: { slot: Slot }) {
       </motion.div>
       <h3>{t.title}</h3>
       <p>{t.body}</p>
-      <p className="sub">毎日 10:00 と 20:00 に、受信箱の新しいメールを読み込みます。読むだけで、送信・削除・既読の変更はしません。</p>
+      <p className="sub">届いたメールは自動で読み込みます。読むだけで、送信・削除・既読の変更はしません。</p>
       <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-connect">
         {t.button}
       </motion.button>

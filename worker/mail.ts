@@ -2,7 +2,7 @@ import type { Env } from "./index";
 
 /**
  * メール：個人（Gmail）・事業（Gmail）・大学（受け皿の Gmail。大学の Outlook から転送）の受信箱を、
- * 毎日 10:00 と 20:00（日本時間）に読み込む。
+ * 5分ごと（Cron）と、画面を開いている間は1分ごと（画面から）に読み込む。
  * - どれも読むだけ（gmail.readonly）。送信・削除・既読の変更はしない
  * - 一覧には差出人・件名・日時・冒頭の一部だけを保存する。本文の全文は、タップしたときにだけ取りに行き、保存しない
  * - 各枠の受信箱の新しい順に30件まで。既読・未読は Flick の中だけで持つ
@@ -405,7 +405,7 @@ export async function refreshUser(env: Env, userId: string): Promise<Partial<Rec
   return out;
 }
 
-/** Cron（10:00 / 20:00 JST）：つないでいる全員分 */
+/** Cron（5分ごと）：つないでいる全員分 */
 export async function runScheduled(env: Env) {
   const { results } = await env.DB.prepare("SELECT DISTINCT user_id FROM mail_sources WHERE status = 'ok'").all<{ user_id: string }>();
   for (const r of results) {
@@ -420,6 +420,10 @@ export async function runScheduled(env: Env) {
 export const rowToItem = (r: any): MailItem => ({ ...r, read: Boolean(r.read) });
 
 /* ---------- E2E 用のモック（本番では使われない） ---------- */
+
+/** E2E 用：あとから届いたメール（dev-new で足す） */
+const mockArrived = new Set<string>();
+export const mockArrive = (email: string) => { mockArrived.add(email); };
 
 /** メールアドレスで枠のモックを分ける（aihp… = 事業、…ukezara… = 大学の受け皿、それ以外 = 個人）。old = 受信箱にない古いメールも含める */
 function mockMails(email: string, old = false): Raw[] {
@@ -439,7 +443,11 @@ function mockMails(email: string, old = false): Raw[] {
     const archived = [mk("u9", "NTTデータ 採用担当", "recruit@example.co.jp", "インターンシップ選考結果のご連絡", t - 120 * day, "先日はインターンシップ選考にご参加いただきありがとうございました。", true)];
     return old ? [...inbox, ...archived] : inbox;
   }
+  const arrived = mockArrived.has(email)
+    ? [mk("g4", "Google カレンダー", "calendar@example.com", "新しい予定の招待", Date.now() - 60_000, "11月20日の打ち合わせに招待されました。", false)]
+    : [];
   return [
+    ...arrived,
     mk("g1", "三井住友カード", "info@example-card.jp", "カードご利用のお知らせ", t + 60_000, "ご利用日 11月7日 ご利用先 Amazon ご利用金額 3,280円", false),
     mk("g2", "NTTデータ 採用担当", "recruit@example.co.jp", "一次面接日程のご案内", t + 180_000, "11月12日 10:00 からの一次面接についてご案内します。", false),
     mk("g3", "Amazon.co.jp", "store-news@amazon.co.jp", "タイムセール開催中", t, "今だけ最大50%オフ", true),

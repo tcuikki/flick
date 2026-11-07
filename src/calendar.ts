@@ -6,8 +6,42 @@ export type CalInfo = { id: string; title: string; color: string; primary: boole
 export type CalEvent = {
   id: string; calendarId: string; title: string; start: string; end: string; allDay: boolean;
   location: string; description: string; color: string; editable: boolean; recurring: boolean;
+  /** Google カレンダーの予定の色（"1"〜"11"）。"" はカレンダーの色のまま */
+  colorId: string;
 };
-export type EventInput = { calendarId: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string };
+export type EventInput = { calendarId: string; title: string; start: string; end: string; allDay: boolean; location: string; description: string; colorId: string };
+
+/**
+ * 予定の色と、その色を何に使っているか（りんごじゅうすの使い分け）。
+ * id は Google カレンダーの予定の色の番号。"" はカレンダーの色のまま（＝ローズ。ジムに使っている）
+ */
+export type ColorChoice = { id: string; name: string; use: string; hex: string };
+export const ROSE = "#e0607e";
+export const MAIN_COLORS: ColorChoice[] = [
+  { id: "7", name: "ピーコック", use: "バイト", hex: "#039be5" },
+  { id: "", name: "ローズ", use: "ジム", hex: ROSE },
+  { id: "8", name: "グラファイト", use: "就活準備・AIHP・レポート", hex: "#616161" },
+  { id: "10", name: "バジル", use: "就活", hex: "#0b8043" },
+  { id: "11", name: "トマト", use: "遊び", hex: "#d50000" },
+  { id: "3", name: "ブドウ", use: "大学", hex: "#8e24aa" },
+  { id: "5", name: "バナナ", use: "給料日", hex: "#f6bf26" },
+];
+export const OTHER_COLORS: ColorChoice[] = [
+  { id: "1", name: "ラベンダー", use: "", hex: "#7986cb" },
+  { id: "2", name: "セージ", use: "", hex: "#33b679" },
+  { id: "4", name: "フラミンゴ", use: "", hex: "#e67c73" },
+  { id: "6", name: "ミカン", use: "", hex: "#f4511e" },
+  { id: "9", name: "ブルーベリー", use: "", hex: "#3f51b5" },
+];
+const ALL_COLORS = [...MAIN_COLORS, ...OTHER_COLORS];
+export const colorChoice = (id: string) => ALL_COLORS.find((c) => c.id === id) ?? MAIN_COLORS[1];
+
+/** 画面に出す色。色を付けていないメインのカレンダーの予定はローズで出す（Google カレンダーの見え方に合わせる） */
+export function evColor(ev: Pick<CalEvent, "colorId" | "color" | "calendarId">, calendars: CalInfo[]) {
+  if (ev.colorId) return colorChoice(ev.colorId).hex;
+  const cal = calendars.find((c) => c.id === ev.calendarId);
+  return !cal || cal.primary ? ROSE : ev.color;
+}
 export type CalSource = { email: string; status: "ok" | "expired" } | null;
 
 type State = {
