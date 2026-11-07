@@ -10,6 +10,7 @@
 - **AI（Workers AI）** — 「明日までに資料作成」→ タスク名「資料作成」+ 期限「明日」に自動整理（AI には期限の言葉と日付だけを答えさせ、タスク名は打った文から期限の言葉を取り除いて作るので、文字が書き換わらない）。
 - **AIに頼む（音声）** — ＋ の左のマイクボタンから、今の状況を話す（または書く）と、Whisper（`@cf/openai/whisper-large-v3-turbo`）で文字にし、AI がタスク・期限・状態に分けて提案。**提案は一覧で確かめてから追加**（チェックを外す・名前や期限を直すことができる）。AI が元の文に無い漢字を書いた場合は「字を確認」の目印を出す（以前起きた字化け対策）。
 - **完了ボタン** — 詳細シートの下に「完了」（完了済みなら「未着手に戻す」）。
+- **メール（Gmail・iCloud）** — 未着手・進行中・完了とは別の枠。毎日 **10:00 と 18:00（日本時間）** に Cron で Gmail を読み（`gmail.readonly`・読むだけ）、AI が「何のメールか」と「要対応／確認／お知らせ／広告」の分類、「やることの案」を作る。届くと一覧の上にお知らせが出る。iCloud メールは iCloud.com で Gmail へ転送してもらい、宛先（@icloud.com / @me.com / @mac.com）で「iCloud」に分ける。本文は読まず、差出人・件名・冒頭の一部だけを使う。Google のリフレッシュトークンは AES-GCM で暗号化して D1 に保存。
 - **ログインは Google のみ**。
 - **オフライン** — 端末内に保存して楽観的に更新し、復帰したら同期（後勝ち）。
 
@@ -55,6 +56,11 @@ API（すべて同一オリジン、書き込みは Origin 検証あり）
 | POST | `/api/ai/enrich` | メモ → タスク名 + 期限 |
 | POST | `/api/ai/plan` | 話した状況 → タスク案の一覧（追加はしない） |
 | POST | `/api/ai/transcribe` | 録音（音声ファイルそのまま）→ 文字（Whisper） |
+| GET | `/api/mail/connect` | Gmail（読むだけ）の許可を求める（既存のリダイレクト URI を使う） |
+| GET | `/api/mail` | 接続状態と、最近のまとめ（最大14回分） |
+| POST | `/api/mail/check` | 今すぐチェック（1分に1回まで） |
+| POST | `/api/mail/digests/:id/seen` | まとめを既読にする |
+| DELETE | `/api/mail` | 接続を解除し、まとめも消す |
 
 ## ローカルで動かす
 
@@ -113,3 +119,11 @@ npm test           # 本番ビルドを workerd で起動し、iPhone 15 Pro 相
 ## デザインの参照
 
 - Apple Human Interface Guidelines — [Materials](https://developer.apple.com/design/human-interface-guidelines/materials)（Liquid Glass はコントロール/ナビゲーション層に限定、コンテンツ層には使わない、regular バリアントで可読性を確保、控えめに使う）
+
+## メール機能の準備（Google Cloud）
+
+1. Google Cloud Console（プロジェクト `flick`）で **Gmail API を有効にする**（API とサービス → ライブラリ → Gmail API → 有効にする）。
+2. Flick の右上の ✉ →「Gmailをつなぐ」。Google の画面で「Gmail のメールの表示」に**チェックを入れて**許可する。
+3. iCloud のメールも見る場合は、iCloud.com → メール → 設定 →「転送」で Gmail のアドレスへ転送する。
+
+Google Auth Platform の公開ステータスが「テスト中」のあいだは、Google の決まりで**7日ごとに許可が切れる**。切れたら ✉ に橙色の印が付き、「つなぎ直す」から再接続できる。

@@ -11,8 +11,10 @@ import { TaskSheet } from "./components/TaskSheet";
 import { Tabs } from "./components/Tabs";
 import { NewTaskSheet } from "./components/NewTaskSheet";
 import { AiSheet } from "./components/AiSheet";
+import { MailView, countBy } from "./components/MailView";
+import { digestLabel, loadMail, useMail } from "./mail";
 import { primeKeyboard } from "./focus";
-import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
+import { ChevronRight, Google, MailIcon, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
 type Toast = { id: number; text: string; undo?: () => void };
 const MIN_SKELETON_MS = 450;
@@ -34,6 +36,11 @@ export function App() {
   const [menu, setMenu] = useState(false);
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [mailOpen, setMailOpen] = useState(false);
+  const mailAccount = useMail((m) => m.account);
+  const latest = useMail((m) => m.digests[0] ?? null);
+  const unseen = useMail((m) => m.digests.filter((d) => !d.seen_at && d.items.length > 0).length);
+  const closeMail = useCallback(() => setMailOpen(false), []);
 
   const setTab = useCallback((s: Status) => {
     setTabState((cur) => {
@@ -92,6 +99,15 @@ export function App() {
     [setTab, showToast],
   );
 
+  /* ---------- メール（10:00 / 18:00 のまとめ） ---------- */
+  useEffect(() => {
+    if (auth !== "in") return;
+    void loadMail();
+    const onVis = () => document.visibilityState === "visible" && void loadMail();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [auth]);
+
   useEffect(() => {
     drainBootQueue();
     const onKey = (e: KeyboardEvent) => {
@@ -105,6 +121,12 @@ export function App() {
     const params = new URLSearchParams(location.search);
     if (params.get("login") === "failed") {
       showToast("ログインできませんでした");
+      history.replaceState(null, "", "/");
+    }
+    const mail = params.get("mail");
+    if (mail) {
+      showToast(mail === "connected" ? "Gmailをつなぎました" : mail === "denied" ? "メールを読む許可がありませんでした" : "Gmailにつなげませんでした");
+      if (mail === "connected") setMailOpen(true);
       history.replaceState(null, "", "/");
     }
     return () => window.removeEventListener("keydown", onKey);
@@ -203,6 +225,16 @@ export function App() {
               </motion.span>
             )}
           </AnimatePresence>
+          {auth === "in" && (
+            <motion.button className="mail-btn glass" whileTap={{ scale: 0.9 }} onClick={() => { haptic("light"); setMailOpen(true); }} aria-label="メール" data-testid="mail-open">
+              <MailIcon size={20} />
+              <AnimatePresence>
+                {(unseen > 0 || mailAccount?.status === "expired") && (
+                  <motion.i className={`mail-badge ${mailAccount?.status === "expired" ? "warn" : ""}`} data-testid="mail-badge" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 20 }} />
+                )}
+              </AnimatePresence>
+            </motion.button>
+          )}
           {auth === "in" && user && (
             <motion.button className="avatar glass" whileTap={{ scale: 0.9 }} onClick={() => setMenu((m) => !m)} aria-label="アカウント" data-testid="avatar">
               {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : <span>{(user.name || user.email).slice(0, 1).toUpperCase()}</span>}
@@ -255,6 +287,32 @@ export function App() {
             </motion.button>
           </motion.section>
         )}
+
+        <AnimatePresence>
+          {booted && auth === "in" && latest && !latest.seen_at && latest.items.length > 0 && (
+            <motion.button
+              key={latest.id}
+              className="mail-banner glass"
+              data-testid="mail-banner"
+              initial={{ opacity: 0, y: -24, scale: 0.94 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.96 }}
+              transition={{ type: "spring", stiffness: 420, damping: 26 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => { haptic("light"); setMailOpen(true); }}
+            >
+              <span className="mail-banner-icon"><MailIcon size={20} /></span>
+              <span className="mail-banner-text">
+                <strong>{digestLabel(latest.created_at)} のメール {latest.items.length}件</strong>
+                <span>
+                  Gmail {countBy(latest).gmail}・iCloud {countBy(latest).icloud}
+                  {countBy(latest).action > 0 && <em>要対応 {countBy(latest).action}</em>}
+                </span>
+              </span>
+              <ChevronRight size={18} className="mail-banner-chev" />
+            </motion.button>
+          )}
+        </AnimatePresence>
 
         {booted && (
           <AnimatePresence mode="popLayout" initial={false} custom={dir}>
@@ -332,6 +390,7 @@ export function App() {
       <TaskSheet taskId={openId} onClose={() => setOpenId(null)} onDelete={handleDelete} onComplete={onComplete} />
       <NewTaskSheet open={adding} defaultStatus={tab} onClose={closeAdd} onAdded={onAdded} />
       <AiSheet open={asking} onClose={closeAsk} onAdded={onAiAdded} />
+      <MailView open={mailOpen} onClose={closeMail} toast={showToast} />
 
       <AnimatePresence>
         {toast && (

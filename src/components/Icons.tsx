@@ -51,3 +51,15 @@ export const Mic = ({ size, className }: P) => (
 export const Stop = ({ size, className }: P) => (
   <svg {...base(size)} className={className} stroke="none" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" /></svg>
 );
+export const MailIcon = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}><rect x="3" y="5" width="18" height="14" rx="3.5" /><path d="m4 7.5 8 5.5 8-5.5" /></svg>
+);
+export const ChevronLeft = ({ size, className }: P) => (
+  <svg {...base(size)} className={className} strokeWidth={2.4}><path d="M15 5 8 12l7 7" /></svg>
+);
+export const ChevronRight = ({ size, className }: P) => (
+  <svg {...base(size)} className={className} strokeWidth={2.4}><path d="m9 5 7 7-7 7" /></svg>
+);
+export const Refresh = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 5v6h-6" /></svg>
+);

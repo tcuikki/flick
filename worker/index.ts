@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arctic";
 import { enrichMemo, planTasks, transcribe } from "./ai";
+import { GMAIL_SCOPE, encryptToken, gmailAddress, rowToDigest, runCheck, runScheduled } from "./mail";
 
 export type Env = {
   DB: D1Database;
@@ -98,6 +99,38 @@ app.get("/auth/google", (c) => {
   return c.redirect(url.toString(), 302);
 });
 
+/** セッション Cookie からログイン中のユーザーを調べる（ログイン必須の範囲の外で使う） */
+async function sessionUserId(c: any): Promise<string | null> {
+  const token = getCookie(c, SESSION_COOKIE);
+  if (!token) return null;
+  const row = await c.env.DB.prepare("SELECT user_id, expires_at FROM sessions WHERE id = ?")
+    .bind(await sha256(token))
+    .first();
+  return row && row.expires_at > Date.now() ? String(row.user_id) : null;
+}
+
+/** Gmail（読むだけ）の許可を受け取り、リフレッシュトークンを暗号化して保存する */
+async function connectMail(c: any, code: string, verifier: string) {
+  const userId = await sessionUserId(c);
+  if (!userId) return c.redirect("/?mail=failed", 302);
+  try {
+    const tokens = await google(c).validateAuthorizationCode(code, verifier);
+    const scopes: string[] = tokens.hasScopes() ? tokens.scopes() : [];
+    if (!scopes.includes(GMAIL_SCOPE) || !tokens.hasRefreshToken()) return c.redirect("/?mail=denied", 302);
+    const email = await gmailAddress(c.env, tokens.accessToken());
+    await c.env.DB.prepare(
+      `INSERT INTO mail_accounts (user_id, email, token_enc, status, connected_at) VALUES (?, ?, ?, 'ok', ?)
+       ON CONFLICT(user_id) DO UPDATE SET email = excluded.email, token_enc = excluded.token_enc, status = 'ok', connected_at = excluded.connected_at`,
+    )
+      .bind(userId, email, await encryptToken(c.env, tokens.refreshToken()), Date.now())
+      .run();
+    return c.redirect("/?mail=connected", 302);
+  } catch (e) {
+    console.warn("mail connect failed", e);
+    return c.redirect("/?mail=failed", 302);
+  }
+}
+
 app.get("/auth/google/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
@@ -105,9 +138,12 @@ app.get("/auth/google/callback", async (c) => {
   const verifier = getCookie(c, "flick_oauth_verifier");
   deleteCookie(c, "flick_oauth_state", { path: "/" });
   deleteCookie(c, "flick_oauth_verifier", { path: "/" });
+  const purpose = getCookie(c, "flick_oauth_purpose");
+  deleteCookie(c, "flick_oauth_purpose", { path: "/" });
   if (!code || !state || !savedState || !verifier || state !== savedState) {
-    return c.redirect("/?login=failed", 302);
+    return c.redirect(purpose === "mail" ? "/?mail=failed" : "/?login=failed", 302);
   }
+  if (purpose === "mail") return connectMail(c, code, verifier);
   try {
     const tokens = await google(c).validateAuthorizationCode(code, verifier);
     // ID トークンは Google のトークンエンドポイントから TLS で直接受け取っているので署名検証は不要（OIDC Core 3.1.3.7）
@@ -278,10 +314,86 @@ app.post("/ai/transcribe", async (c) => {
   }
 });
 
+/* ---------- メール（Gmail・読むだけ） ---------- */
+
+app.get("/mail/connect", (c) => {
+  const state = generateState();
+  const verifier = generateCodeVerifier();
+  const url = google(c).createAuthorizationURL(state, verifier, ["openid", "email", "profile", GMAIL_SCOPE]);
+  url.searchParams.set("access_type", "offline"); // 10:00 / 18:00 にサーバーから読むために必要
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("include_granted_scopes", "true");
+  url.searchParams.set("login_hint", c.get("user").email);
+  const opts = { httpOnly: true, secure: isHttps(c.req.url), sameSite: "Lax" as const, path: "/", maxAge: 600 };
+  setCookie(c, "flick_oauth_state", state, opts);
+  setCookie(c, "flick_oauth_verifier", verifier, opts);
+  setCookie(c, "flick_oauth_purpose", "mail", opts);
+  return c.redirect(url.toString(), 302);
+});
+
+app.get("/mail", async (c) => {
+  const uid = c.get("user").id;
+  const account = await c.env.DB.prepare("SELECT email, status, connected_at, last_checked_at FROM mail_accounts WHERE user_id = ?").bind(uid).first();
+  const { results } = await c.env.DB.prepare("SELECT * FROM mail_digests WHERE user_id = ? ORDER BY created_at DESC LIMIT 14").bind(uid).all();
+  return c.json({ account: account ?? null, digests: results.map(rowToDigest) });
+});
+
+app.post("/mail/check", async (c) => {
+  const uid = c.get("user").id;
+  const recent = await c.env.DB.prepare("SELECT created_at FROM mail_digests WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").bind(uid).first<{ created_at: number }>();
+  if (recent && Date.now() - recent.created_at < 60_000) return c.json({ error: "too_soon" }, 429);
+  const r = await runCheck(c.env, uid);
+  if (r.status === "none") return c.json({ error: "not_connected" }, 400);
+  if (r.status === "expired") return c.json({ error: "expired" }, 409);
+  return c.json({ digest: r.digest });
+});
+
+app.post("/mail/digests/:id/seen", async (c) => {
+  await c.env.DB.prepare("UPDATE mail_digests SET seen_at = COALESCE(seen_at, ?) WHERE id = ? AND user_id = ?")
+    .bind(Date.now(), c.req.param("id"), c.get("user").id)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.delete("/mail", async (c) => {
+  const uid = c.get("user").id;
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM mail_accounts WHERE user_id = ?").bind(uid),
+    c.env.DB.prepare("DELETE FROM mail_digests WHERE user_id = ?").bind(uid),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** E2E テスト専用：Gmail につないだことにする（E2E フラグ + localhost のときだけ） */
+app.post("/mail/dev-connect", async (c) => {
+  if (c.env.E2E !== "1" || !["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname)) return c.notFound();
+  const b = await c.req.json<{ token?: string }>().catch(() => ({}) as any);
+  await c.env.DB.prepare(
+    `INSERT INTO mail_accounts (user_id, email, token_enc, status, connected_at) VALUES (?, 'tester@gmail.com', ?, 'ok', ?)
+     ON CONFLICT(user_id) DO UPDATE SET token_enc = excluded.token_enc, status = 'ok'`,
+  )
+    .bind(c.get("user").id, await encryptToken(c.env, String(b.token || "e2e-refresh")), Date.now())
+    .run();
+  return c.json({ ok: true });
+});
+
+/** E2E テスト専用：10:00 / 18:00 の自動チェックと同じ処理を今すぐ動かす */
+app.post("/mail/dev-cron", async (c) => {
+  if (c.env.E2E !== "1" || !["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname)) return c.notFound();
+  await runScheduled(c.env);
+  return c.json({ ok: true });
+});
+
 app.notFound((c) => c.json({ error: "not_found" }, 404));
 app.onError((err, c) => {
   console.error(err);
   return c.json({ error: "server_error" }, 500);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  /** 10:00 と 18:00（日本時間）にメールをチェック（wrangler.jsonc の triggers.crons） */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runScheduled(env));
+  },
+} satisfies ExportedHandler<Env>;
