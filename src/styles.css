@@ -383,6 +383,24 @@ html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; t
 .mail-subject { font-size: 15px; line-height: 1.35; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mail-row.unread .mail-subject { font-weight: 700; }
 .mail-summary { font-size: 13px; color: var(--ink-2); margin-top: 2px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* 検索 */
+.mail-search { position: relative; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px 0 14px; margin-bottom: 12px; border-radius: 14px; background: rgba(118, 118, 128, 0.12); }
+.mail-search-icon { flex: none; color: var(--ink-2); }
+.mail-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; font: 400 16px/1 var(--font); color: var(--ink); -webkit-appearance: none; appearance: none; }
+.mail-search input::-webkit-search-cancel-button { display: none; }
+.mail-search input::placeholder { color: var(--ink-3); }
+.mail-search-clear { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 18px; line-height: 1; color: #fff; background: rgba(60, 60, 67, 0.35); }
+.mail-readall { font-size: 13.5px; font-weight: 700; color: var(--blue); padding: 6px 10px; margin: -6px -6px -6px 0; border-radius: 12px; }
+.mail-readall:active { background: rgba(0, 122, 255, 0.1); }
+
+/* 本文（全文） */
+.mail-detail { max-height: 88vh; }
+.mail-detail-body { padding: 12px 14px; border-radius: 16px; background: rgba(118, 118, 128, 0.07); margin-bottom: 6px; }
+.mail-detail-body p { margin: 0; font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+.mail-detail-body a { color: var(--blue); }
+.mail-body-loading { display: flex; flex-direction: column; gap: 9px; padding: 4px 0; }
+.mail-body-loading .sk { height: 13px; border-radius: 6px; }
+.mail-body-missing { color: var(--ink-2); }
 .mail-task-chip { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 700; color: #6d4cff; background: rgba(124, 92, 255, 0.1); }
 .mail-hint { margin: 12px 6px 0; font-size: 12px; color: var(--ink-3); line-height: 1.5; }
 .mail-empty { text-align: center; padding: 30px 10px; color: var(--ink-2); font-size: 14px; }
@@ -414,3 +432,5 @@ html.mail-open .fabs, html.mail-open .tabs { opacity: 0; pointer-events: none; t
 .mail-task-title { font-size: 15.5px; font-weight: 600; line-height: 1.4; margin-top: 4px; }
 .mail-detail .primary-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .mail-open-original { display: block; text-align: center; margin: 14px 0 2px; font-size: 13px; color: var(--blue); }
+.mail-count.search b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mail-count.search span { flex: none; }

@@ -11,11 +11,11 @@ export type MailItem = {
 };
 export type MailSource = { slot: Slot; provider: "google" | "microsoft"; email: string; status: "ok" | "expired"; connected_at: number; checked_at: number | null };
 
-type State = { loaded: boolean; sources: MailSource[]; items: MailItem[]; outlookReady: boolean; checking: boolean; openedAt: number };
+type State = { loaded: boolean; sources: MailSource[]; items: MailItem[]; checking: boolean; openedAt: number };
 const OPENED = "flick:mail-opened";
 const loadOpened = () => { try { return Number(localStorage.getItem(OPENED)) || 0; } catch { return 0; } };
 
-let state: State = { loaded: false, sources: [], items: [], outlookReady: false, checking: false, openedAt: loadOpened() };
+let state: State = { loaded: false, sources: [], items: [], checking: false, openedAt: loadOpened() };
 const listeners = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
@@ -27,8 +27,8 @@ export const mailState = () => state;
 
 export async function loadMail() {
   try {
-    const r = await api<{ sources: MailSource[]; items: MailItem[]; outlookReady: boolean }>("/api/mail");
-    set({ loaded: true, sources: r.sources, items: r.items, outlookReady: r.outlookReady });
+    const r = await api<{ sources: MailSource[]; items: MailItem[] }>("/api/mail");
+    set({ loaded: true, sources: r.sources, items: r.items });
   } catch {
     set({ loaded: true });
   }
@@ -58,6 +58,56 @@ export async function setRead(item: MailItem, read: boolean) {
   } catch {
     /* 次に開いたときに戻るだけ */
   }
+}
+
+/** その枠を全部既読にする（Flick の中だけ） */
+export async function readAll(slot: Slot) {
+  set({ items: state.items.map((m) => (m.slot === slot ? { ...m, read: true } : m)) });
+  try { await api("/api/mail/read-all", { method: "POST", body: { slot } }); } catch { /* 次に開いたときに戻るだけ */ }
+}
+
+/** キーワード検索（古いメールも含む） */
+export async function searchMail(slot: Slot, q: string): Promise<MailItem[]> {
+  const r = await api<{ items: MailItem[] }>(`/api/mail/search?slot=${slot}&q=${encodeURIComponent(q)}`);
+  return r.items;
+}
+
+/**
+ * 本文の全文。サーバーは文字コードの名前とバイト列だけを返すので、ブラウザで文字にする
+ * （日本語のメールに多い ISO-2022-JP / Shift_JIS もブラウザなら読める）
+ */
+export async function fetchBody(item: Pick<MailItem, "slot" | "id">): Promise<string | null> {
+  const r = await api<{ body: { mime: string; charset: string; data: string } | null }>(
+    `/api/mail/items/${item.slot}/${encodeURIComponent(item.id)}/body`,
+  );
+  if (!r.body) return null;
+  const text = decodeBytes(r.body.data, r.body.charset);
+  return r.body.mime === "text/html" ? htmlToText(text) : text.replace(/\r\n/g, "\n").trim();
+}
+
+export function decodeBytes(b64: string, charset: string) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  try {
+    return new TextDecoder(charset || "utf-8").decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes); // 知らない文字コード名のとき
+  }
+}
+
+/** HTML メールを読める文字だけにする（スクリプトや見た目の指定は捨てる） */
+export function htmlToText(html: string) {
+  const marked = html
+    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)>/gi, "\n");
+  const doc = new DOMParser().parseFromString(marked, "text/html");
+  return (doc.body?.textContent ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function markOpened() {

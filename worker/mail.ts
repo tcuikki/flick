@@ -1,16 +1,20 @@
 import type { Env } from "./index";
 
 /**
- * メール：個人（Gmail）・事業（Gmail）・大学（Outlook）の受信箱を、毎日 10:00 と 20:00（日本時間）に読み込む。
- * - どれも読むだけ（Gmail = gmail.readonly、Outlook = Microsoft Graph の Mail.Read）。送信・削除・既読の変更はしない
- * - 本文は読まず、差出人・件名・日時・冒頭の一部（Gmail の snippet / Outlook の bodyPreview）だけを使う
- * - 各枠の受信箱の新しい順に30件まで。新しく来たメールだけ AI に「何のメールか」の説明を書いてもらう
- * - 既読・未読は Flick の中だけで持つ（最初はメールサービス側の状態を使う）
+ * メール：個人（Gmail）・事業（Gmail）・大学（受け皿の Gmail。大学の Outlook から転送）の受信箱を、
+ * 毎日 10:00 と 20:00（日本時間）に読み込む。
+ * - どれも読むだけ（gmail.readonly）。送信・削除・既読の変更はしない
+ * - 一覧には差出人・件名・日時・冒頭の一部だけを保存する。本文の全文は、タップしたときにだけ取りに行き、保存しない
+ * - 各枠の受信箱の新しい順に30件まで。既読・未読は Flick の中だけで持つ
+ * - 大学の Outlook を直接読む方式（Microsoft Graph）は、大学の設定でアプリ登録ができなかったため、
+ *   MS_CLIENT_ID が設定されているときだけ使う
  */
 
 export type Slot = "personal" | "business" | "univ";
 export const SLOTS: Slot[] = ["personal", "business", "univ"];
-export const SLOT_PROVIDER: Record<Slot, "google" | "microsoft"> = { personal: "google", business: "google", univ: "microsoft" };
+export type Provider = "google" | "microsoft";
+/** 大学は、Microsoft のアプリ登録があるときだけ Outlook を直接読む。ないときは受け皿の Gmail */
+export const providerFor = (env: Env, slot: Slot): Provider => (slot === "univ" && env.MS_CLIENT_ID && env.MS_CLIENT_SECRET ? "microsoft" : "google");
 
 export type MailItem = {
   slot: Slot; id: string; from_name: string; from_addr: string; subject: string; date: number;
@@ -20,8 +24,7 @@ export type MailItem = {
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 export const MS_SCOPE = "offline_access User.Read Mail.Read";
 const MAX_PER_SLOT = 30;
-const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_SEARCH = 20;
 
 /* ---------- トークンの暗号化（AES-GCM。鍵は GOOGLE_CLIENT_SECRET から導出） ---------- */
 
@@ -89,24 +92,25 @@ export async function gmailAddress(env: Env, access: string) {
   return String(((await res.json()) as any).emailAddress);
 }
 
-/**
- * 受信箱の新しい順に ids を取り、まだ持っていないものだけ中身（ヘッダーと冒頭）を取る。
- * 1件ずつ取ると外部通信が多くなる（無料プランは1回50まで）ので、Gmail のバッチ API でまとめて1回で取る
- */
-async function fetchGmail(env: Env, access: string, email: string, known: Set<string>): Promise<{ ids: string[]; fresh: Raw[] }> {
-  if (env.E2E === "1") return mockGmail(email, known);
-  const list = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${MAX_PER_SLOT}&labelIds=INBOX`, {
+async function gmailList(access: string, query: string, max: number): Promise<string[]> {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${max}&${query}`, {
     headers: { authorization: `Bearer ${access}` },
   });
-  if (list.status === 401) throw new ExpiredError("unauthorized");
-  if (!list.ok) throw new Error(`gmail list ${list.status}`);
-  const ids: string[] = (((await list.json()) as any).messages ?? []).map((m: any) => String(m.id));
-  const need = ids.filter((id) => !known.has(id));
-  if (!need.length) return { ids, fresh: [] };
+  if (res.status === 401) throw new ExpiredError("unauthorized");
+  if (!res.ok) throw new Error(`gmail list ${res.status}`);
+  return (((await res.json()) as any).messages ?? []).map((m: any) => String(m.id));
+}
+
+/**
+ * ヘッダーと冒頭（snippet）だけを取る。1件ずつ取ると外部通信が多くなる（無料プランは1回50まで）ので、
+ * Gmail のバッチ API でまとめて1回で取る
+ */
+async function gmailMeta(access: string, email: string, ids: string[]): Promise<Raw[]> {
+  if (!ids.length) return [];
   const boundary = "flick_batch";
   const q = ["From", "Subject", "Date"].map((h) => `metadataHeaders=${h}`).join("&");
   const body =
-    need.map((id, i) => `--${boundary}\r\nContent-Type: application/http\r\nContent-ID: <m${i}>\r\n\r\nGET /gmail/v1/users/me/messages/${id}?format=metadata&${q}\r\n\r\n`).join("") +
+    ids.map((id, i) => `--${boundary}\r\nContent-Type: application/http\r\nContent-ID: <m${i}>\r\n\r\nGET /gmail/v1/users/me/messages/${id}?format=metadata&${q}\r\n\r\n`).join("") +
     `--${boundary}--`;
   const res = await fetch("https://gmail.googleapis.com/batch/gmail/v1", {
     method: "POST",
@@ -115,13 +119,13 @@ async function fetchGmail(env: Env, access: string, email: string, known: Set<st
   });
   if (res.status === 401) throw new ExpiredError("unauthorized");
   if (!res.ok) throw new Error(`gmail batch ${res.status}`);
-  const fresh: Raw[] = [];
+  const out: Raw[] = [];
   for (const m of parseBatch(await res.text())) {
     if (!m?.id) continue;
     const h: Record<string, string> = {};
     for (const x of m.payload?.headers ?? []) h[String(x.name).toLowerCase()] = String(x.value);
     const from = parseFrom(h["from"]);
-    fresh.push({
+    out.push({
       id: String(m.id),
       from_name: from.name,
       from_addr: from.email,
@@ -132,7 +136,65 @@ async function fetchGmail(env: Env, access: string, email: string, known: Set<st
       read: !(m.labelIds ?? []).includes("UNREAD"),
     });
   }
-  return { ids, fresh };
+  return out.sort((a, b) => b.date - a.date);
+}
+
+/** 受信箱の新しい順に ids を取り、まだ持っていないものだけ中身を取る */
+async function fetchGmail(env: Env, access: string, email: string, known: Set<string>): Promise<{ ids: string[]; fresh: Raw[] }> {
+  if (env.E2E === "1") {
+    const all = mockMails(email);
+    return { ids: all.map((m) => m.id), fresh: all.filter((m) => !known.has(m.id)) };
+  }
+  const ids = await gmailList(access, "labelIds=INBOX", MAX_PER_SLOT);
+  return { ids, fresh: await gmailMeta(access, email, ids.filter((id) => !known.has(id))) };
+}
+
+/** キーワード検索（受信箱以外・古いメールも含む。Gmail の検索と同じ書き方が使える） */
+async function searchGmail(env: Env, access: string, email: string, q: string): Promise<Raw[]> {
+  if (env.E2E === "1") {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    return mockMails(email, true)
+      .filter((m) => words.every((w) => `${m.from_name} ${m.from_addr} ${m.subject} ${m.snippet}`.toLowerCase().includes(w)))
+      .sort((a, b) => b.date - a.date);
+  }
+  return gmailMeta(access, email, await gmailList(access, `q=${encodeURIComponent(q)}`, MAX_SEARCH));
+}
+
+/**
+ * 本文。日本語のメールは ISO-2022-JP や Shift_JIS のことがあり、Workers では読み替えられない文字コードがあるので、
+ * 文字コードの名前とバイト列（base64）をそのまま返し、ブラウザの TextDecoder で文字にする
+ */
+export type BodyPart = { mime: "text/plain" | "text/html"; charset: string; data: string };
+
+function findParts(p: any, out: { plain?: any; html?: any }) {
+  if (!p) return;
+  const mime = String(p.mimeType || "").toLowerCase();
+  const isAttachment = Boolean(p.filename);
+  if (!isAttachment && mime === "text/plain" && p.body?.data && !out.plain) out.plain = p;
+  if (!isAttachment && mime === "text/html" && p.body?.data && !out.html) out.html = p;
+  for (const c of p.parts ?? []) findParts(c, out);
+}
+
+const charsetOf = (p: any) => {
+  const ct = (p.headers ?? []).find((h: any) => String(h.name).toLowerCase() === "content-type")?.value ?? "";
+  return (String(ct).match(/charset="?([^";\s]+)/i)?.[1] ?? "utf-8").toLowerCase();
+};
+const b64urlToB64 = (s: string) => s.replace(/-/g, "+").replace(/_/g, "/");
+
+async function gmailBody(env: Env, access: string, id: string): Promise<BodyPart | null> {
+  if (env.E2E === "1") return mockBody(id);
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`, {
+    headers: { authorization: `Bearer ${access}` },
+  });
+  if (res.status === 401) throw new ExpiredError("unauthorized");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`gmail body ${res.status}`);
+  const m: any = await res.json();
+  const found: { plain?: any; html?: any } = {};
+  findParts(m.payload, found);
+  const p = found.plain ?? found.html;
+  if (!p) return null;
+  return { mime: found.plain ? "text/plain" : "text/html", charset: charsetOf(p), data: b64urlToB64(String(p.body.data)).slice(0, 400_000) };
 }
 
 /** バッチ API の応答（multipart）から、各メールの JSON を取り出す */
@@ -219,87 +281,90 @@ async function fetchOutlook(env: Env, access: string, known: Set<string>): Promi
   return { ids, fresh };
 }
 
-/* ---------- AI：新しいメールだけ「何のメールか」の説明と、やることを付ける ---------- */
-
-type AiOut = { mails: { i: number; summary: string; task: string | null; due_date: string | null }[] };
-
-async function describe(env: Env, mails: Raw[], today: string): Promise<AiOut> {
-  if (env.E2E === "1") return mockDescribe(mails);
-  const weekday = WEEK[new Date(`${today}T00:00:00Z`).getUTCDay()];
-  const list = mails.map((m, i) => `[${i}] 差出人: ${m.from_name}\n件名: ${m.subject}\n冒頭: ${m.snippet.slice(0, 220)}`).join("\n\n");
-  const raw: any = await env.AI.run(env.AI_MODEL as any, {
-    messages: [
-      {
-        role: "system",
-        content:
-          `あなたは大学生の秘書です。届いたメールを、開かなくても中身がわかるように説明します。今日は ${today}（${weekday}曜日）です。\n` +
-          `すべてのメールについて次を返す。\n` +
-          `- i: 番号\n` +
-          `- summary: 何のメールかを日本語40〜70文字で。金額・日時・締切・相手など大事な事実を入れる。固有名詞と漢字は元の文のまま使い、書いていないことは足さない。\n` +
-          `- task: 本人が返信・提出・支払い・手続きなどをする必要があれば「〇〇に返信する」のような短い行動の文。必要なければ null。広告には付けない。\n` +
-          `- due_date: task の締切が書いてあれば YYYY-MM-DD、なければ null。`,
-      },
-      { role: "user", content: list },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        type: "object",
-        properties: {
-          mails: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: { i: { type: "integer" }, summary: { type: "string" }, task: { type: ["string", "null"] }, due_date: { type: ["string", "null"] } },
-              required: ["i", "summary", "task", "due_date"],
-            },
-          },
-        },
-        required: ["mails"],
-      },
-    },
-    max_tokens: 3000,
-    temperature: 0,
-  } as any);
-  const r = raw?.response ?? raw;
-  if (r && typeof r === "object") return r as AiOut;
-  const m = typeof r === "string" ? r.match(/\{[\s\S]*\}/) : null;
-  return m ? (JSON.parse(m[0]) as AiOut) : { mails: [] };
+async function outlookBody(access: string, id: string): Promise<BodyPart | null> {
+  const res = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(id)}?$select=body`, { headers: { authorization: `Bearer ${access}` } });
+  if (res.status === 401) throw new ExpiredError("unauthorized");
+  if (!res.ok) return null;
+  const j: any = await res.json();
+  const bytes = new TextEncoder().encode(String(j.body?.content ?? "")).slice(0, 300_000);
+  return { mime: j.body?.contentType === "html" ? "text/html" : "text/plain", charset: "utf-8", data: b64(bytes) };
 }
 
-export function attachAi(mails: Raw[], ai: AiOut | null) {
-  const byIndex = new Map((ai?.mails ?? []).map((x) => [Number(x.i), x]));
-  return mails.map((m, i) => {
-    const a = byIndex.get(i);
-    const summary = typeof a?.summary === "string" && a.summary.trim() ? a.summary.trim().slice(0, 140) : "";
-    const task = typeof a?.task === "string" && a.task.trim() ? a.task.replace(/\s+/g, " ").trim().slice(0, 200) : null;
-    const due = task && typeof a?.due_date === "string" && DATE.test(a.due_date) ? a.due_date : null;
-    return { ...m, summary, task_title: task, task_due: due };
+async function searchOutlook(access: string, q: string): Promise<Raw[]> {
+  const sel = "id,subject,from,receivedDateTime,bodyPreview,isRead,webLink";
+  const res = await fetch(`https://graph.microsoft.com/v1.0/me/messages?$search=${encodeURIComponent(`"${q.replace(/"/g, "")}"`)}&$top=${MAX_SEARCH}&$select=${sel}`, {
+    headers: { authorization: `Bearer ${access}` },
   });
+  if (res.status === 401) throw new ExpiredError("unauthorized");
+  if (!res.ok) throw new Error(`graph search ${res.status}`);
+  return (((await res.json()) as any).value ?? []).map((m: any) => ({
+    id: String(m.id), from_name: String(m.from?.emailAddress?.name || ""), from_addr: String(m.from?.emailAddress?.address || ""),
+    subject: String(m.subject || "（件名なし）"), date: Date.parse(m.receivedDateTime) || 0, snippet: String(m.bodyPreview || "").slice(0, 300),
+    link: String(m.webLink || ""), read: Boolean(m.isRead),
+  })).sort((a: Raw, b: Raw) => b.date - a.date);
 }
 
 /* ---------- 1つの枠を読み込む ---------- */
 
-const todayJST = () => new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10);
+type SourceRow = { slot: Slot; provider: string; email: string; token_enc: string };
+
+/** その枠のアクセストークン（Microsoft は新しいリフレッシュトークンも保存し直す） */
+async function accessFor(env: Env, userId: string, src: SourceRow): Promise<string> {
+  const refresh = await decryptToken(env, src.token_enc);
+  if (src.provider === "microsoft") {
+    const t = await msAccess(env, refresh);
+    if (t.refresh !== refresh) {
+      await env.DB.prepare("UPDATE mail_sources SET token_enc = ? WHERE user_id = ? AND slot = ?").bind(await encryptToken(env, t.refresh), userId, src.slot).run();
+    }
+    return t.access;
+  }
+  return googleAccess(env, refresh);
+}
+
+async function sourceRow(env: Env, userId: string, slot: Slot): Promise<SourceRow | null> {
+  return env.DB.prepare("SELECT slot, provider, email, token_enc FROM mail_sources WHERE user_id = ? AND slot = ? AND status = 'ok'").bind(userId, slot).first<SourceRow>();
+}
+
+/** 検索（保存しない） */
+export async function searchSlot(env: Env, userId: string, slot: Slot, q: string): Promise<MailItem[] | "none" | "expired"> {
+  const src = await sourceRow(env, userId, slot);
+  if (!src) return "none";
+  try {
+    const access = env.E2E === "1" ? "e2e" : await accessFor(env, userId, src);
+    const raws = src.provider === "microsoft" ? await searchOutlook(access, q) : await searchGmail(env, access, src.email, q);
+    // 一覧に入っているメールは、その既読・未読を使う
+    const { results } = await env.DB.prepare("SELECT id, read FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, slot).all<{ id: string; read: number }>();
+    const known = new Map(results.map((r) => [r.id, Boolean(r.read)]));
+    return raws.map((m) => ({ ...m, slot, summary: "", task_title: null, task_due: null, read: known.get(m.id) ?? m.read }));
+  } catch (e) {
+    if (e instanceof ExpiredError) return "expired";
+    throw e;
+  }
+}
+
+/** 本文（タップしたときだけ取りに行く。保存しない） */
+export async function bodyOf(env: Env, userId: string, slot: Slot, id: string): Promise<BodyPart | null | "none" | "expired"> {
+  const src = await sourceRow(env, userId, slot);
+  if (!src) return "none";
+  try {
+    const access = env.E2E === "1" ? "e2e" : await accessFor(env, userId, src);
+    return src.provider === "microsoft" ? await outlookBody(access, id) : await gmailBody(env, access, id);
+  } catch (e) {
+    if (e instanceof ExpiredError) return "expired";
+    throw e;
+  }
+}
 
 export type SlotResult = "ok" | "expired" | "error";
 
-async function refreshSlot(env: Env, userId: string, src: { slot: Slot; provider: string; email: string; token_enc: string }): Promise<SlotResult> {
+async function refreshSlot(env: Env, userId: string, src: SourceRow): Promise<SlotResult> {
   const now = Date.now();
   const { results } = await env.DB.prepare("SELECT id FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, src.slot).all<{ id: string }>();
   const known = new Set(results.map((r) => r.id));
   let fetched: { ids: string[]; fresh: Raw[] };
   try {
-    const refresh = await decryptToken(env, src.token_enc);
-    if (src.provider === "microsoft") {
-      const t = await msAccess(env, refresh);
-      if (t.refresh !== refresh) {
-        await env.DB.prepare("UPDATE mail_sources SET token_enc = ? WHERE user_id = ? AND slot = ?").bind(await encryptToken(env, t.refresh), userId, src.slot).run();
-      }
-      fetched = await fetchOutlook(env, t.access, known);
-    } else {
-      fetched = await fetchGmail(env, await googleAccess(env, refresh), src.email, known);
-    }
+    const access = await accessFor(env, userId, src);
+    fetched = src.provider === "microsoft" ? await fetchOutlook(env, access, known) : await fetchGmail(env, access, src.email, known);
   } catch (e) {
     if (e instanceof ExpiredError || e instanceof DOMException) {
       await env.DB.prepare("UPDATE mail_sources SET status = 'expired', checked_at = ? WHERE user_id = ? AND slot = ?").bind(now, userId, src.slot).run();
@@ -309,19 +374,11 @@ async function refreshSlot(env: Env, userId: string, src: { slot: Slot; provider
     return "error";
   }
 
-  let described = attachAi(fetched.fresh, null);
-  if (fetched.fresh.length) {
-    try {
-      described = attachAi(fetched.fresh, await describe(env, fetched.fresh, todayJST()));
-    } catch (e) {
-      console.warn("mail describe failed", e); // AI が失敗しても、件名と冒頭だけで表示できる
-    }
-  }
-  const stmts = described.map((m) =>
+  const stmts = fetched.fresh.map((m) =>
     env.DB.prepare(
-      `INSERT OR IGNORE INTO mail_items (user_id, slot, id, from_name, from_addr, subject, date, snippet, summary, task_title, task_due, link, read, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(userId, src.slot, m.id, m.from_name, m.from_addr, m.subject, m.date, m.snippet, m.summary, m.task_title, m.task_due, m.link, m.read ? 1 : 0, now),
+      `INSERT OR IGNORE INTO mail_items (user_id, slot, id, from_name, from_addr, subject, date, snippet, link, read, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(userId, src.slot, m.id, m.from_name, m.from_addr, m.subject, m.date, m.snippet, m.link, m.read ? 1 : 0, now),
   );
   // 受信箱から無くなったもの（アーカイブ・削除）は Flick からも消す
   const keep = fetched.ids;
@@ -364,17 +421,45 @@ export const rowToItem = (r: any): MailItem => ({ ...r, read: Boolean(r.read) })
 
 /* ---------- E2E 用のモック（本番では使われない） ---------- */
 
-function mockGmail(email: string, known: Set<string>): { ids: string[]; fresh: Raw[] } {
+/** メールアドレスで枠のモックを分ける（aihp… = 事業、…ukezara… = 大学の受け皿、それ以外 = 個人）。old = 受信箱にない古いメールも含める */
+function mockMails(email: string, old = false): Raw[] {
   const t = Date.now() - 3 * 3_600_000;
-  const biz = email.startsWith("aihp");
-  const all: Raw[] = biz
-    ? [{ id: "b1", from_name: "山田工務店", from_addr: "info@yamada.example.jp", subject: "ホームページ修正のお願い", date: t + 120_000, snippet: "トップページの営業時間を11月15日までに直してほしいです。", link: "https://mail.google.com/mail/u/#all/b1", read: false }]
-    : [
-        { id: "g1", from_name: "三井住友カード", from_addr: "info@example-card.jp", subject: "カードご利用のお知らせ", date: t + 60_000, snippet: "ご利用日 11月7日 ご利用先 Amazon ご利用金額 3,280円", link: "https://mail.google.com/mail/u/#all/g1", read: false },
-        { id: "g2", from_name: "NTTデータ 採用担当", from_addr: "recruit@example.co.jp", subject: "一次面接日程のご案内", date: t + 180_000, snippet: "11月12日 10:00 からの一次面接についてご案内します。11月10日までにご返信ください。", link: "https://mail.google.com/mail/u/#all/g2", read: false },
-        { id: "g3", from_name: "Amazon.co.jp", from_addr: "store-news@amazon.co.jp", subject: "タイムセール開催中", date: t, snippet: "今だけ最大50%オフ", link: "https://mail.google.com/mail/u/#all/g3", read: true },
-      ];
-  return { ids: all.map((m) => m.id), fresh: all.filter((m) => !known.has(m.id)) };
+  const day = 86_400_000;
+  const mk = (id: string, from_name: string, from_addr: string, subject: string, dt: number, snippet: string, read: boolean): Raw =>
+    ({ id, from_name, from_addr, subject, date: dt, snippet, link: `https://mail.google.com/mail/u/#all/${id}`, read });
+  if (email.startsWith("aihp")) {
+    return [mk("b1", "山田工務店", "info@yamada.example.jp", "ホームページ修正のお願い", t + 120_000, "トップページの営業時間を11月15日までに直してほしいです。", false)];
+  }
+  if (email.includes("ukezara")) {
+    const inbox = [
+      mk("u1", "東京都市大学 教務課", "kyomu@tcu.ac.jp", "【至急】履修登録の確認について", t + 60_000, "11月10日までに履修登録の内容を確認し、提出してください。", false),
+      mk("u2", "キャリア支援センター", "career@tcu.ac.jp", "模擬面接のお知らせ", t, "11月11日に模擬面接を行います。", true),
+    ];
+    // Gmail のインポートで取り込んだ、過去の就活のメール（受信箱には出ない）
+    const archived = [mk("u9", "NTTデータ 採用担当", "recruit@example.co.jp", "インターンシップ選考結果のご連絡", t - 120 * day, "先日はインターンシップ選考にご参加いただきありがとうございました。", true)];
+    return old ? [...inbox, ...archived] : inbox;
+  }
+  return [
+    mk("g1", "三井住友カード", "info@example-card.jp", "カードご利用のお知らせ", t + 60_000, "ご利用日 11月7日 ご利用先 Amazon ご利用金額 3,280円", false),
+    mk("g2", "NTTデータ 採用担当", "recruit@example.co.jp", "一次面接日程のご案内", t + 180_000, "11月12日 10:00 からの一次面接についてご案内します。", false),
+    mk("g3", "Amazon.co.jp", "store-news@amazon.co.jp", "タイムセール開催中", t, "今だけ最大50%オフ", true),
+  ].sort((a, b) => b.date - a.date);
+}
+
+/** 本文のモック：g1 は日本語のメールでよくある ISO-2022-JP、g2 は HTML のメール */
+function mockBody(id: string): BodyPart | null {
+  if (id === "g1") {
+    return {
+      mime: "text/plain",
+      charset: "iso-2022-jp",
+      data: "GyRCOzAwZj07TSclKyE8JUkkciQ0TXhNUSQkJD8kQCQtJCIkaiQsJEgkJiQ0JDYkJCReJDkhIxsoQg0KDQobJEIkNE14TVFGfCEnGyhCMjAyNhskQkcvGyhCMTEbJEI3bhsoQjcbJEJGfBsoQg0KGyRCJDRNeE1RQGghJxsoQkFtYXpvbg0KGyRCJDRNeE1RNmIzWyEnGyhCMywyODAbJEIxXxsoQg0KDQobJEIiKEtcJWEhPCVrJE9Bdz8uQGxNUSRHJDkhIxsoQg==",
+    };
+  }
+  if (id === "g2") {
+    const html = "<html><head><style>p{color:red}</style></head><body><p>江原 様</p><p>一次面接の日程をご案内します。<br>日時：11月12日 10:00〜</p><p>ご確認のほど&nbsp;よろしくお願いいたします。</p><script>alert(1)</script></body></html>";
+    return { mime: "text/html", charset: "utf-8", data: b64(new TextEncoder().encode(html)) };
+  }
+  return { mime: "text/plain", charset: "utf-8", data: b64(new TextEncoder().encode("本文のテストです。")) };
 }
 
 function mockOutlook(known: Set<string>): { ids: string[]; fresh: Raw[] } {
@@ -384,16 +469,4 @@ function mockOutlook(known: Set<string>): { ids: string[]; fresh: Raw[] } {
     { id: "u2", from_name: "キャリア支援センター", from_addr: "career@tcu.ac.jp", subject: "模擬面接のお知らせ", date: t, snippet: "11月11日に模擬面接を行います。", link: "https://outlook.office.com/mail/u2", read: true },
   ];
   return { ids: all.map((m) => m.id), fresh: all.filter((m) => !known.has(m.id)) };
-}
-
-function mockDescribe(mails: Raw[]): AiOut {
-  return {
-    mails: mails.map((m, i) => {
-      if (/カード/.test(m.subject)) return { i, summary: "11月7日にAmazonで3,280円をカードで支払ったお知らせ", task: null, due_date: null };
-      if (/面接/.test(m.subject) && /返信/.test(m.snippet)) return { i, summary: "11月12日10:00の一次面接の案内。11月10日までに返信が必要", task: "NTTデータに面接日程の返信をする", due_date: "2026-11-10" };
-      if (/履修/.test(m.subject)) return { i, summary: "11月10日までに履修登録の内容を確認して提出するお願い", task: "履修登録の内容を確認して提出する", due_date: "2026-11-10" };
-      if (/修正/.test(m.subject)) return { i, summary: "山田工務店から、11月15日までにトップページの営業時間を直してほしい依頼", task: "山田工務店のトップページの営業時間を直す", due_date: "2026-11-15" };
-      return { i, summary: `${m.subject}のお知らせ`, task: null, due_date: null };
-    }),
-  };
 }

@@ -30,7 +30,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.getByTestId("mail-tab-business").tap();
     await expect(page.getByTestId("mail-connect-card-business")).toContainText("AIHP");
     await page.getByTestId("mail-tab-univ").tap();
-    await expect(page.getByTestId("mail-connect-card-univ")).toContainText("転送はしません");
+    await expect(page.getByTestId("mail-connect-card-univ")).toContainText("受け皿のGmail");
     // メールの画面のあいだは、タスクの＋とタブは隠す（別の枠）
     await expect(page.locator(".fabs")).toHaveCSS("opacity", "0");
     await page.getByTestId("mail-close").tap();
@@ -61,10 +61,11 @@ test.describe("メール（個人・事業・大学）", () => {
     expect(g.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/api/auth/google/callback`);
     expect((await page.context().cookies()).find((c) => c.name === "flick_oauth_purpose")?.value).toBe("mail-business");
 
-    // 大学：E2E では Microsoft のアプリ ID が無いので「準備がまだ」に戻る（本番は Microsoft のログインへ）
+    // 大学：受け皿の Gmail を Google でつなぐ（Microsoft のアプリ登録は大学の設定でできなかった）
     const r = await page.request.get("/api/mail/connect/univ", { maxRedirects: 0 });
     expect(r.status()).toBe(302);
-    expect(r.headers()["location"]).toBe("/?mail=ms-notready");
+    expect(r.headers()["location"]).toContain("accounts.google.com/o/oauth2/v2/auth");
+    expect(r.headers()["location"]).toContain(encodeURIComponent("https://www.googleapis.com/auth/gmail.readonly"));
   });
 
   test("受信箱を新着順に、未読つきで出す。押すとアプリの中で説明が出て既読になる", async ({ page }) => {
@@ -90,13 +91,16 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(page.getByText("要対応")).toHaveCount(0);
     await expect(rows(page).nth(2)).toHaveAttribute("data-read", "1");
 
-    // カードのお知らせを押す → 外へ飛ばず、AI の説明と冒頭を表示。既読になる
+    // カードのお知らせを押す → 外へ飛ばず、本文の全文をアプリの中で表示。既読になる
     await rows(page).nth(1).tap();
     const detail = page.getByTestId("mail-detail");
     await expect(detail).toBeVisible();
     await expect(page).toHaveURL(/workers\.dev|localhost/);
-    await expect(page.getByTestId("mail-detail-summary")).toContainText("3,280円");
-    await expect(page.getByTestId("mail-detail-snippet")).toContainText("ご利用先 Amazon");
+    // ISO-2022-JP（日本語のメールでよくある文字コード）でも文字化けしない
+    await expect(page.getByTestId("mail-detail-body")).toContainText("三井住友カードをご利用いただきありがとうございます。");
+    await expect(page.getByTestId("mail-detail-body")).toContainText("ご利用金額：3,280円");
+    await expect(page.getByTestId("mail-detail-body")).toContainText("※本メールは送信専用です。");
+    await expect(page.getByText("AIの説明")).toHaveCount(0); // AI の説明は出さない
     await expect(page.getByTestId("mail-open-original")).toHaveAttribute("target", "_blank");
     await page.keyboard.press("Escape");
     await expect(detail).toHaveCount(0);
@@ -109,7 +113,16 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.getByTestId("mail-tab-personal").tap();
     await expect(rows(page).nth(1)).toHaveAttribute("data-read", "1");
 
-    // 大学：Outlook を直接読んだメール
+    // HTML のメールは文字だけにして表示（スクリプトや見た目の指定は出さない）
+    await rows(page).nth(0).tap();
+    const body = page.getByTestId("mail-detail-body");
+    await expect(body).toContainText("日時：11月12日 10:00〜");
+    await expect(body).toContainText("ご確認のほど よろしくお願いいたします。");
+    await expect(body).not.toContainText("alert");
+    await expect(body).not.toContainText("color:red");
+    await page.keyboard.press("Escape");
+
+    // 大学：受け皿の Gmail（大学の Outlook から転送）
     await page.getByTestId("mail-tab-univ").tap();
     await expect(rows(page).locator(".mail-subject")).toHaveText(["【至急】履修登録の確認について", "模擬面接のお知らせ"]);
     // 事業：AIHP の Gmail
@@ -149,7 +162,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect.poll(async () => (await (await page.request.get("/api/mail")).json()).items.find((m: any) => m.id === "g2")?.read).toBe(false);
   });
 
-  test("メールの中身から「タスクにする」で未着手に入る（AI のやることの案と締切つき）", async ({ page }) => {
+  test("メールの中身から「タスクにする」で未着手に入る（件名がタスク名になる）", async ({ page }) => {
     await login(page);
     await devConnect(page, "univ");
     await cron(page);
@@ -157,16 +170,15 @@ test.describe("メール（個人・事業・大学）", () => {
     await ready(page);
     await page.getByTestId("mail-open").tap();
     await page.getByTestId("mail-tab-univ").tap();
-    await expect(rows(page).nth(0)).toContainText("やることあり");
     await rows(page).nth(0).tap();
-    await expect(page.getByTestId("mail-detail")).toContainText("履修登録の内容を確認して提出する");
+    await expect(page.getByTestId("mail-detail-body")).toContainText("本文のテストです。");
     await page.getByTestId("mail-to-task").tap();
     await expect(page.getByTestId("mail-to-task")).toContainText("追加しました");
-    await expect.poll(async () => (await serverTasks(page)).map((t) => [t.title, t.due_date])).toEqual([["履修登録の内容を確認して提出する", "2026-11-10"]]);
-    expect((await serverTasks(page))[0].note).toContain("【至急】履修登録の確認について");
+    await expect.poll(async () => (await serverTasks(page)).map((t) => t.title)).toEqual(["【至急】履修登録の確認について"]);
+    expect((await serverTasks(page))[0].note).toContain("東京都市大学 教務課");
     await page.keyboard.press("Escape");
     await page.getByTestId("mail-close").tap();
-    await expect(card(page, "履修登録の内容を確認して提出する")).toBeVisible();
+    await expect(card(page, "【至急】履修登録の確認について")).toBeVisible();
   });
 
   test("自動更新で新しいメールが来ると一覧の上にお知らせ。メールを開いて閉じると消える", async ({ page }) => {
@@ -203,6 +215,57 @@ test.describe("メール（個人・事業・大学）", () => {
     expect(after.find((m: any) => m.id === "g1").read).toBe(true);
   });
 
+  test("キーワードで検索できる。受信箱にない古いメール（取り込んだ就活のメール）も見つかる", async ({ page }) => {
+    await login(page);
+    await devConnect(page, "personal");
+    await devConnect(page, "univ");
+    await cron(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("mail-tab-personal").tap();
+    await page.getByTestId("mail-search").fill("面接");
+    await page.getByTestId("mail-search").press("Enter");
+    await expect(page.getByTestId("mail-search-count")).toContainText("「面接」");
+    await expect(page.getByTestId("mail-search-count")).toContainText("1件");
+    await expect(page.getByTestId("mail-search-results").getByTestId("mail-row")).toHaveCount(1);
+    await expect(page.getByTestId("mail-search-results")).toContainText("一次面接日程のご案内");
+
+    // 枠を変えると同じ言葉で探し直す。大学の受け皿に取り込んだ4か月前の就活メールも見つかる
+    await page.getByTestId("mail-search").fill("インターンシップ");
+    await page.getByTestId("mail-search").press("Enter");
+    await expect(page.getByTestId("mail-search-count")).toContainText("0件");
+    await page.getByTestId("mail-tab-univ").tap();
+    await expect(page.getByTestId("mail-search-results")).toContainText("インターンシップ選考結果のご連絡");
+    await page.getByTestId("mail-search-results").getByTestId("mail-row").first().tap();
+    await expect(page.getByTestId("mail-detail-body")).toContainText("本文のテストです。");
+    await expect(page.getByTestId("mail-toggle-read")).toHaveCount(0); // 一覧に無いメールは既読を切り替えない
+    await page.keyboard.press("Escape");
+
+    // × で検索をやめると、受信箱の一覧に戻る
+    await page.getByTestId("mail-search-clear").tap();
+    await expect(page.getByTestId("mail-count")).toBeVisible();
+    await expect(rows(page)).toHaveCount(2);
+  });
+
+  test("「すべて既読にする」でその枠の未読が0になる（ほかの枠はそのまま）", async ({ page }) => {
+    await login(page);
+    await devConnect(page, "personal");
+    await devConnect(page, "univ");
+    await cron(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("mail-open").tap();
+    await page.getByTestId("mail-tab-personal").tap();
+    await expect(page.getByTestId("mail-unread-personal")).toHaveText("2");
+    await page.getByTestId("mail-read-all").tap();
+    await expect(page.getByTestId("mail-count")).toContainText("未読 0件");
+    await expect(page.getByTestId("mail-unread-personal")).toHaveCount(0);
+    await expect(page.getByTestId("mail-read-all")).toHaveCount(0);
+    await expect(page.getByTestId("mail-unread-univ")).toHaveText("1");
+    await expect.poll(async () => (await (await page.request.get("/api/mail")).json()).items.filter((m: any) => m.slot === "personal" && !m.read).length).toBe(0);
+  });
+
   test("許可が切れた枠には「つなぎ直す」を出し、ほかの枠は読み込める", async ({ page }) => {
     await login(page);
     await devConnect(page, "personal", "expired");
@@ -224,6 +287,8 @@ test.describe("メール（個人・事業・大学）", () => {
     const anon = await playwright.request.newContext({ baseURL: ORIGIN });
     expect((await anon.get("/api/mail")).status()).toBe(401);
     expect((await anon.get("/api/mail/connect/personal", { maxRedirects: 0 })).status()).toBe(401);
+    expect((await anon.get("/api/mail/search?slot=personal&q=x")).status()).toBe(401);
+    expect((await anon.get("/api/mail/items/personal/g1/body")).status()).toBe(401);
     await anon.dispose();
 
     await login(page, "A");

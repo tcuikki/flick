@@ -3,8 +3,8 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arctic";
 import { enrichMemo, planTasks, transcribe } from "./ai";
 import {
-  GMAIL_SCOPE, MS_SCOPE, SLOTS, SLOT_PROVIDER, type Slot,
-  encryptToken, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, refreshUser, rowToItem, runScheduled,
+  GMAIL_SCOPE, MS_SCOPE, SLOTS, type Slot,
+  bodyOf, encryptToken, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
 } from "./mail";
 
 export type Env = {
@@ -122,7 +122,7 @@ async function saveSource(c: any, userId: string, slot: Slot, email: string, ref
     c.env.DB.prepare(
       `INSERT INTO mail_sources (user_id, slot, provider, email, token_enc, status, connected_at) VALUES (?, ?, ?, ?, ?, 'ok', ?)
        ON CONFLICT(user_id, slot) DO UPDATE SET provider = excluded.provider, email = excluded.email, token_enc = excluded.token_enc, status = 'ok', connected_at = excluded.connected_at`,
-    ).bind(userId, slot, SLOT_PROVIDER[slot], email, await encryptToken(c.env, refresh), Date.now()),
+    ).bind(userId, slot, providerFor(c.env, slot), email, await encryptToken(c.env, refresh), Date.now()),
     // 別のアカウントにつなぎ直したときに前のメールが混ざらないように
     c.env.DB.prepare("DELETE FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, slot),
   ]);
@@ -159,7 +159,7 @@ app.get("/auth/google/callback", async (c) => {
   if (!code || !state || !savedState || !verifier || state !== savedState) {
     return c.redirect(purpose?.startsWith("mail-") ? "/?mail=failed" : "/?login=failed", 302);
   }
-  if (purpose === "mail-personal" || purpose === "mail-business") return connectGmail(c, purpose.slice(5) as Slot, code, verifier);
+  if (purpose === "mail-personal" || purpose === "mail-business" || purpose === "mail-univ") return connectGmail(c, purpose.slice(5) as Slot, code, verifier);
   try {
     const tokens = await google(c).validateAuthorizationCode(code, verifier);
     // ID トークンは Google のトークンエンドポイントから TLS で直接受け取っているので署名検証は不要（OIDC Core 3.1.3.7）
@@ -368,13 +368,12 @@ app.get("/mail/connect/:slot", async (c) => {
   if (!isSlot(slot)) return c.json({ error: "invalid_slot" }, 400);
   const state = generateState();
   const verifier = generateCodeVerifier();
-  if (SLOT_PROVIDER[slot] === "microsoft") {
-    if (!c.env.MS_CLIENT_ID || !c.env.MS_CLIENT_SECRET) return c.redirect("/?mail=ms-notready", 302);
+  if (providerFor(c.env, slot) === "microsoft") {
     const challenge = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)))))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     const url = new URL(msAuthorizeUrl(c.env));
     url.search = new URLSearchParams({
-      client_id: c.env.MS_CLIENT_ID, response_type: "code", redirect_uri: msRedirect(c), response_mode: "query",
+      client_id: c.env.MS_CLIENT_ID!, response_type: "code", redirect_uri: msRedirect(c), response_mode: "query",
       scope: MS_SCOPE, state, code_challenge: challenge, code_challenge_method: "S256", prompt: "select_account",
     }).toString();
     setCookie(c, "flick_ms_state", state, cookieOpts(c));
@@ -397,7 +396,7 @@ app.get("/mail", async (c) => {
   const { results: items } = await c.env.DB.prepare(
     "SELECT slot, id, from_name, from_addr, subject, date, snippet, summary, task_title, task_due, link, read FROM mail_items WHERE user_id = ? ORDER BY date DESC",
   ).bind(uid).all();
-  return c.json({ sources, items: items.map(rowToItem), outlookReady: Boolean(c.env.MS_CLIENT_ID && c.env.MS_CLIENT_SECRET) || c.env.E2E === "1" });
+  return c.json({ sources, items: items.map(rowToItem) });
 });
 
 app.post("/mail/check", async (c) => {
@@ -414,6 +413,36 @@ app.post("/mail/items/:slot/:id/read", async (c) => {
     .bind(b.read === false ? 0 : 1, c.get("user").id, c.req.param("slot"), c.req.param("id"))
     .run();
   return c.json({ ok: true });
+});
+
+/** 全部既読（その枠の一覧を、Flick の中で既読にする） */
+app.post("/mail/read-all", async (c) => {
+  const b = await c.req.json<{ slot?: string }>().catch(() => ({}) as any);
+  if (!isSlot(b.slot)) return c.json({ error: "invalid_slot" }, 400);
+  await c.env.DB.prepare("UPDATE mail_items SET read = 1 WHERE user_id = ? AND slot = ?").bind(c.get("user").id, b.slot).run();
+  return c.json({ ok: true });
+});
+
+/** キーワード検索（古いメール・受信箱にないメールも含む。保存しない） */
+app.get("/mail/search", async (c) => {
+  const slot = c.req.query("slot");
+  const q = String(c.req.query("q") ?? "").trim().slice(0, 200);
+  if (!isSlot(slot)) return c.json({ error: "invalid_slot" }, 400);
+  if (!q) return c.json({ items: [] });
+  const r = await searchSlot(c.env, c.get("user").id, slot, q);
+  if (r === "none") return c.json({ error: "not_connected" }, 400);
+  if (r === "expired") return c.json({ error: "expired" }, 409);
+  return c.json({ items: r });
+});
+
+/** 本文の全文（タップしたときだけ。保存しない） */
+app.get("/mail/items/:slot/:id/body", async (c) => {
+  const slot = c.req.param("slot");
+  if (!isSlot(slot)) return c.json({ error: "invalid_slot" }, 400);
+  const r = await bodyOf(c.env, c.get("user").id, slot, c.req.param("id"));
+  if (r === "none") return c.json({ error: "not_connected" }, 400);
+  if (r === "expired") return c.json({ error: "expired" }, 409);
+  return c.json({ body: r });
 });
 
 app.delete("/mail/:slot", async (c) => {
@@ -433,12 +462,12 @@ app.post("/mail/dev-connect", async (c) => {
   if (!devOnly(c)) return c.notFound();
   const b = await c.req.json<{ slot?: string; token?: string; email?: string }>().catch(() => ({}) as any);
   const slot: Slot = isSlot(b.slot) ? b.slot : "personal";
-  const email = String(b.email || (slot === "univ" ? "g0000000@tcu.ac.jp" : slot === "business" ? "aihp@example.com" : "tester@gmail.com"));
+  const email = String(b.email || (slot === "univ" ? "g0000000.ukezara@gmail.com" : slot === "business" ? "aihp@example.com" : "tester@gmail.com"));
   await c.env.DB.prepare(
     `INSERT INTO mail_sources (user_id, slot, provider, email, token_enc, status, connected_at) VALUES (?, ?, ?, ?, ?, 'ok', ?)
      ON CONFLICT(user_id, slot) DO UPDATE SET token_enc = excluded.token_enc, email = excluded.email, status = 'ok'`,
   )
-    .bind(c.get("user").id, slot, SLOT_PROVIDER[slot], email, await encryptToken(c.env, String(b.token || "e2e-refresh")), Date.now())
+    .bind(c.get("user").id, slot, providerFor(c.env, slot), email, await encryptToken(c.env, String(b.token || "e2e-refresh")), Date.now())
     .run();
   return c.json({ ok: true });
 });

@@ -3,13 +3,12 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useDragControls, useMotionValue, useTransform } from "motion/react";
 import {
   type MailItem, type Slot, SLOTS, SLOT_LABEL,
-  connectSlot, dayTimeLabel, disconnectSlot, fullTime, listTime, markOpened, nextUpdateLabel, refreshMailNow, setRead, useMail,
+  connectSlot, dayTimeLabel, disconnectSlot, fetchBody, fullTime, listTime, markOpened, nextUpdateLabel,
+  readAll, refreshMailNow, searchMail, setRead, useMail,
 } from "../mail";
 import { addPlanned } from "../store";
-import { dueLabel } from "../date";
 import { haptic } from "../haptics";
-import { strangeKanji } from "../kanji";
-import { Check, ChevronLeft, MailIcon, Refresh, Sparkle } from "./Icons";
+import { Check, ChevronLeft, MailIcon, Refresh } from "./Icons";
 
 type Props = { open: boolean; onClose: () => void; toast: (text: string) => void };
 
@@ -20,17 +19,24 @@ export function MailView({ open, onClose, toast }: Props) {
   const sources = useMail((s) => s.sources);
   const items = useMail((s) => s.items);
   const checking = useMail((s) => s.checking);
-  const outlookReady = useMail((s) => s.outlookReady);
   const [slot, setSlot] = useState<Slot>("personal");
   const [detail, setDetail] = useState<MailItem | null>(null);
   const detailRef = useRef<MailItem | null>(null);
   detailRef.current = detail;
+
+  // 検索
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState<{ slot: Slot; q: string; items: MailItem[] } | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   useEffect(() => {
     if (!open) return;
     // 未読があるところを最初に開く
     const first = SLOTS.find((s) => items.some((m) => m.slot === s && !m.read)) ?? SLOTS.find((s) => sources.some((x) => x.slot === s)) ?? "personal";
     setSlot(first);
+    setQuery("");
+    setSearched(null);
     document.documentElement.classList.add("mail-open");
     // 中身を開いているときの Esc は中身だけ閉じる（最新の状態を ref で見る）
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && (detailRef.current ? setDetail(null) : onClose());
@@ -42,10 +48,35 @@ export function MailView({ open, onClose, toast }: Props) {
     };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const runSearch = async (s: Slot, q: string) => {
+    const word = q.trim();
+    if (!word) { setSearched(null); return; }
+    setSearching(true);
+    setSearchError("");
+    try {
+      setSearched({ slot: s, q: word, items: await searchMail(s, word) });
+    } catch {
+      setSearchError("検索できませんでした");
+      setSearched({ slot: s, q: word, items: [] });
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // 検索中に枠を変えたら、その枠で同じ言葉を探し直す
+  useEffect(() => {
+    if (open && searched && searched.slot !== slot) void runSearch(slot, searched.q);
+  }, [slot]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const src = sources.find((s) => s.slot === slot) ?? null;
   const list = items.filter((m) => m.slot === slot).sort((a, b) => b.date - a.date);
   const unread = (s: Slot) => items.filter((m) => m.slot === s && !m.read).length;
   const lastUpdate = Math.max(0, ...sources.map((s) => s.checked_at ?? 0));
+  const inSearch = Boolean(searched && searched.slot === slot);
+  const openItem = (m: MailItem) => {
+    setDetail(m);
+    if (!m.read && items.some((x) => x.slot === m.slot && x.id === m.id)) void setRead(m, true);
+  };
 
   return (
     <AnimatePresence>
@@ -98,25 +129,74 @@ export function MailView({ open, onClose, toast }: Props) {
               ))}
             </div>
 
-            {!src && <ConnectCard slot={slot} ready={slot !== "univ" || outlookReady} />}
+            {!src && <ConnectCard slot={slot} />}
             {src?.status === "expired" && <ExpiredCard slot={slot} />}
             {src?.status === "ok" && (
               <>
-                <div className="mail-count" data-testid="mail-count">
-                  <b>未読 {unread(slot)}件</b>
-                  <span>受信箱の新しい{list.length}件</span>
-                </div>
-                {list.length === 0 && <div className="mail-empty" data-testid="mail-none">まだメールを読み込んでいません。右上の ↻ で今すぐ更新できます。</div>}
-                {list.length > 0 && (
-                  <ul className="mail-list" data-testid="mail-list">
-                    <AnimatePresence initial={false}>
-                      {list.map((m, i) => (
-                        <MailRow key={m.id} m={m} i={i} onOpen={() => { setDetail(m); if (!m.read) void setRead(m, true); }} />
+                <form
+                  className="mail-search"
+                  role="search"
+                  onSubmit={(e) => { e.preventDefault(); (document.activeElement as HTMLElement | null)?.blur(); void runSearch(slot, query); }}
+                >
+                  <SearchIcon />
+                  <input
+                    type="search"
+                    value={query}
+                    placeholder={`${SLOT_LABEL[slot]}のメールを検索（古いメールも）`}
+                    aria-label="メールを検索"
+                    enterKeyHint="search"
+                    data-testid="mail-search"
+                    onChange={(e) => { setQuery(e.target.value); if (!e.target.value) setSearched(null); }}
+                  />
+                  {query && (
+                    <button type="button" className="mail-search-clear" aria-label="検索をやめる" data-testid="mail-search-clear" onClick={() => { setQuery(""); setSearched(null); }}>
+                      ×
+                    </button>
+                  )}
+                </form>
+
+                {inSearch ? (
+                  <>
+                    <div className="mail-count search" data-testid="mail-search-count">
+                      <b>「{searched!.q}」</b>
+                      <span>{searching ? "探しています…" : searchError || `${searched!.items.length}件（新しい順・最大20件）`}</span>
+                    </div>
+                    {!searching && searched!.items.length === 0 && !searchError && <div className="mail-empty">見つかりませんでした</div>}
+                    <ul className="mail-list" data-testid="mail-search-results">
+                      {searched!.items.map((m, i) => (
+                        <MailRow key={m.id} m={m} i={i} swipe={false} onOpen={() => openItem(m)} />
                       ))}
-                    </AnimatePresence>
-                  </ul>
+                    </ul>
+                  </>
+                ) : (
+                  <>
+                    <div className="mail-count" data-testid="mail-count">
+                      <b>未読 {unread(slot)}件</b>
+                      {unread(slot) > 0 ? (
+                        <button
+                          className="mail-readall"
+                          data-testid="mail-read-all"
+                          onClick={() => { haptic("success"); void readAll(slot); toast(`${SLOT_LABEL[slot]}をすべて既読にしました`); }}
+                        >
+                          すべて既読にする
+                        </button>
+                      ) : (
+                        <span>受信箱の新しい{list.length}件</span>
+                      )}
+                    </div>
+                    {list.length === 0 && <div className="mail-empty" data-testid="mail-none">まだメールを読み込んでいません。右上の ↻ で今すぐ更新できます。</div>}
+                    {list.length > 0 && (
+                      <ul className="mail-list" data-testid="mail-list">
+                        <AnimatePresence initial={false}>
+                          {list.map((m, i) => (
+                            <MailRow key={m.id} m={m} i={i} swipe onOpen={() => openItem(m)} />
+                          ))}
+                        </AnimatePresence>
+                      </ul>
+                    )}
+                    <p className="mail-hint">左右にスワイプで 既読 ⇄ 未読。Flick の中だけで変わり、Gmail の既読は変えません。</p>
+                  </>
                 )}
-                <p className="mail-hint">左右にスワイプで 既読 ⇄ 未読。Flick の中だけで変わり、{slot === "univ" ? "Outlook" : "Gmail"} の既読は変えません。</p>
               </>
             )}
             {src && (
@@ -141,13 +221,23 @@ export function MailView({ open, onClose, toast }: Props) {
   );
 }
 
+const SearchIcon = () => (
+  <svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" aria-hidden="true" className="mail-search-icon">
+    <circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" />
+  </svg>
+);
+
 const CONNECT: Record<Slot, { title: string; body: string; button: string }> = {
   personal: { title: "個人のGmailをつなぐ", body: "ふだん使っているGmailのアカウントを選んでください。", button: "個人のGmailをつなぐ" },
   business: { title: "事業（AIHP）のGmailをつなぐ", body: "Googleの画面で、AIHPで使っているアカウントを選んでください。", button: "事業のGmailをつなぐ" },
-  univ: { title: "大学のOutlookをつなぐ", body: "Microsoftの画面で、大学のアカウントでログインしてください。転送はしません。", button: "大学のOutlookをつなぐ" },
+  univ: {
+    title: "大学の受け皿のGmailをつなぐ",
+    body: "大学のOutlookから転送している「受け皿」のGmailを選んでください。ふだんのGmailには大学のメールは入りません。",
+    button: "受け皿のGmailをつなぐ",
+  },
 };
 
-function ConnectCard({ slot, ready }: { slot: Slot; ready: boolean }) {
+function ConnectCard({ slot }: { slot: Slot }) {
   const t = CONNECT[slot];
   return (
     <div className="mail-connect" data-testid={`mail-connect-card-${slot}`}>
@@ -157,15 +247,9 @@ function ConnectCard({ slot, ready }: { slot: Slot; ready: boolean }) {
       <h3>{t.title}</h3>
       <p>{t.body}</p>
       <p className="sub">毎日 10:00 と 20:00 に、受信箱の新しいメールを読み込みます。読むだけで、送信・削除・既読の変更はしません。</p>
-      {ready ? (
-        <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-connect">
-          {t.button}
-        </motion.button>
-      ) : (
-        <div className="mail-notready" data-testid="mail-notready">
-          大学のOutlookを読むには、先にMicrosoft側の準備（アプリ登録）が必要です。準備ができると、ここに「つなぐ」ボタンが出ます。
-        </div>
-      )}
+      <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-connect">
+        {t.button}
+      </motion.button>
     </div>
   );
 }
@@ -174,7 +258,7 @@ function ExpiredCard({ slot }: { slot: Slot }) {
   return (
     <div className="mail-expired" data-testid="mail-expired">
       <h3>{SLOT_LABEL[slot]}との接続が切れました</h3>
-      <p>{slot === "univ" ? "大学のアカウントで、もう一度ログインしてください。" : "Googleのアプリが「テスト中」のあいだは、7日ごとにつなぎ直しが必要です。"}</p>
+      <p>Googleのアプリが「テスト中」のあいだは、7日ごとにつなぎ直しが必要です。</p>
       <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-reconnect">
         つなぎ直す
       </motion.button>
@@ -183,7 +267,7 @@ function ExpiredCard({ slot }: { slot: Slot }) {
 }
 
 /** 1通。左右にスワイプで既読・未読、タップで中身 */
-function MailRow({ m, i, onOpen }: { m: MailItem; i: number; onOpen: () => void }) {
+function MailRow({ m, i, swipe, onOpen }: { m: MailItem; i: number; swipe: boolean; onOpen: () => void }) {
   const x = useMotionValue(0);
   const bgOpacity = useTransform(x, [-SWIPE, -20, 0, 20, SWIPE], [1, 0.4, 0, 0.4, 1]);
   const [armed, setArmed] = useState(false);
@@ -199,14 +283,16 @@ function MailRow({ m, i, onOpen }: { m: MailItem; i: number; onOpen: () => void 
       exit={{ opacity: 0 }}
       transition={{ delay: Math.min(i, 10) * 0.025 }}
     >
-      <motion.div className={`mail-swipe-bg ${m.read ? "to-unread" : "to-read"} ${armed ? "armed" : ""}`} style={{ opacity: bgOpacity }} aria-hidden="true">
-        <span>{m.read ? "未読にする" : "既読にする"}</span>
-        <span>{m.read ? "未読にする" : "既読にする"}</span>
-      </motion.div>
+      {swipe && (
+        <motion.div className={`mail-swipe-bg ${m.read ? "to-unread" : "to-read"} ${armed ? "armed" : ""}`} style={{ opacity: bgOpacity }} aria-hidden="true">
+          <span>{m.read ? "未読にする" : "既読にする"}</span>
+          <span>{m.read ? "未読にする" : "既読にする"}</span>
+        </motion.div>
+      )}
       <motion.button
         className={`mail-row ${m.read ? "" : "unread"}`}
         style={{ x, touchAction: "pan-y" }}
-        drag="x"
+        drag={swipe ? "x" : false}
         dragConstraints={{ left: 0, right: 0 }}
         dragElastic={0.55}
         dragDirectionLock
@@ -229,23 +315,46 @@ function MailRow({ m, i, onOpen }: { m: MailItem; i: number; onOpen: () => void 
             <span className="mail-time">{listTime(m.date)}</span>
           </div>
           <div className="mail-subject">{m.subject}</div>
-          <div className="mail-summary">{m.summary || m.snippet}</div>
-          {m.task_title && <span className="mail-task-chip"><Sparkle size={11} /> やることあり</span>}
+          <div className="mail-summary">{m.snippet}</div>
         </div>
       </motion.button>
     </motion.li>
   );
 }
 
-/** アプリの中で中身を見る（外のサイトへ飛ばない） */
+/** 本文の中の URL を押せるようにする */
+function Linkified({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s<>"'）」]+)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^https?:\/\//.test(p) ? <a key={i} href={p} target="_blank" rel="noreferrer">{p}</a> : <span key={i}>{p}</span>,
+      )}
+    </>
+  );
+}
+
+/** アプリの中で本文の全文を読む（外のサイトへ飛ばない） */
 function MailDetail({ item, onClose, toast }: { item: MailItem | null; onClose: () => void; toast: (t: string) => void }) {
-  const live = useMail((s) => (item ? s.items.find((m) => m.slot === item.slot && m.id === item.id) ?? item : null));
+  const live = useMail((s) => (item ? s.items.find((m) => m.slot === item.slot && m.id === item.id) ?? null : null));
+  const m = live ?? item;
+  const inList = Boolean(live);
   const drag = useDragControls();
   const [added, setAdded] = useState(false);
-  useEffect(() => setAdded(false), [item?.id]);
-  const m = live;
-  const title = m ? m.task_title ?? m.subject : "";
-  const odd = m?.task_title ? strangeKanji(m.task_title, `${m.from_name} ${m.subject} ${m.snippet} ${m.summary}`) : [];
+  const [body, setBody] = useState<{ id: string; text: string | null; error?: boolean } | null>(null);
+
+  useEffect(() => {
+    setAdded(false);
+    if (!item) return;
+    let alive = true;
+    setBody(null);
+    fetchBody(item)
+      .then((text) => alive && setBody({ id: item.id, text }))
+      .catch(() => alive && setBody({ id: item.id, text: null, error: true }));
+    return () => { alive = false; };
+  }, [item?.slot, item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loaded = body && m && body.id === m.id;
 
   // メール画面は横から動く（transform がある）ので、その中に置くと位置がずれる。body の直下に出す
   return createPortal(
@@ -277,40 +386,37 @@ function MailDetail({ item, onClose, toast }: { item: MailItem | null; onClose: 
               <span>{fullTime(m.date)}</span>
             </div>
             <h3 className="mail-detail-subject">{m.subject}</h3>
-            {m.summary && (
-              <div className="mail-detail-box ai" data-testid="mail-detail-summary">
-                <div className="mail-detail-label"><Sparkle size={13} /> AIの説明</div>
-                <p>{m.summary}</p>
-              </div>
-            )}
-            <div className="mail-detail-box" data-testid="mail-detail-snippet">
-              <div className="mail-detail-label">メールの冒頭</div>
-              <p>{m.snippet || "（本文なし）"}</p>
+
+            <div className="mail-detail-body" data-testid="mail-detail-body">
+              {!loaded && (
+                <div className="mail-body-loading" aria-label="本文を読み込んでいます">
+                  <div className="sk" style={{ width: "92%" }} /><div className="sk" style={{ width: "80%" }} /><div className="sk" style={{ width: "86%" }} /><div className="sk" style={{ width: "54%" }} />
+                </div>
+              )}
+              {loaded && body!.text && <p><Linkified text={body!.text} /></p>}
+              {loaded && !body!.text && (
+                <p className="mail-body-missing">{body!.error ? "本文を読み込めませんでした。" : "本文がありません（画像や添付ファイルだけのメールかもしれません）。"}下の「Gmailで開く」から確認してください。</p>
+              )}
             </div>
-            <div className="mail-detail-task">
-              <div className="mail-detail-label">タスクにするなら</div>
-              <div className="mail-task-title">{title}</div>
-              <div className="plan-meta">
-                {m.task_due && <span className="plan-due">{dueLabel(m.task_due).text}</span>}
-                {odd.length > 0 && <span className="plan-warn">字を確認：{odd.join("")}</span>}
-              </div>
-            </div>
+
             <div className="sheet-actions">
-              <motion.button
-                className="ghost-btn"
-                whileTap={{ scale: 0.96 }}
-                data-testid="mail-toggle-read"
-                onClick={() => { haptic(); void setRead(m, !m.read); if (m.read) onClose(); }}
-              >
-                {m.read ? "未読に戻す" : "既読にする"}
-              </motion.button>
+              {inList && (
+                <motion.button
+                  className="ghost-btn"
+                  whileTap={{ scale: 0.96 }}
+                  data-testid="mail-toggle-read"
+                  onClick={() => { haptic(); void setRead(m, !m.read); if (m.read) onClose(); }}
+                >
+                  {m.read ? "未読に戻す" : "既読にする"}
+                </motion.button>
+              )}
               <motion.button
                 className="primary-btn"
                 disabled={added}
                 whileTap={{ scale: 0.96 }}
                 data-testid="mail-to-task"
                 onClick={() => {
-                  addPlanned([{ title, due_date: m.task_due, status: "todo", note: `✉ ${m.from_name}「${m.subject}」` }]);
+                  addPlanned([{ title: m.subject, due_date: null, status: "todo", note: `✉ ${m.from_name}「${m.subject}」` }]);
                   haptic("success");
                   setAdded(true);
                   toast("未着手に追加しました");
@@ -320,7 +426,7 @@ function MailDetail({ item, onClose, toast }: { item: MailItem | null; onClose: 
               </motion.button>
             </div>
             <a className="mail-open-original" href={m.link} target="_blank" rel="noreferrer" data-testid="mail-open-original">
-              {m.slot === "univ" ? "Outlook" : "Gmail"}で全文を開く
+              Gmailで開く
             </a>
           </motion.section>
         </>
