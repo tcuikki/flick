@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useDragControls, useMotionValue, useTransform } from "motion/react";
 import {
-  type MailItem, type Slot, SLOTS, SLOT_LABEL,
+  type MailItem, type Slot, SLOTS, SLOT_LABEL, autoCheck,
   connectSlot, disconnectSlot, fetchBody, fullTime, listTime, markOpened,
   readAll, searchMail, setRead, useMail,
 } from "../mail";
@@ -13,6 +13,9 @@ import { Check, MailIcon } from "./Icons";
 type Props = { active: boolean; toast: (text: string) => void };
 
 const SWIPE = 80;
+/** 引っぱって更新：この長さ（px）まで引いて離すと読み込む */
+const PULL_READY = 64;
+const PULL_MAX = 110;
 
 /** メールのページ（下のタブ「メール」）。個人・事業・大学の受信箱を新着順に、未読・既読つきで見せる */
 export function MailView({ active, toast }: Props) {
@@ -28,6 +31,70 @@ export function MailView({ active, toast }: Props) {
   const [searched, setSearched] = useState<{ slot: Slot; q: string; items: MailItem[] } | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+
+  // 引っぱって更新（一番上で下へ引く → 丸い点が並び、離すと読み込む）
+  const [pull, setPull] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const busy = useRef(false);
+  useEffect(() => {
+    if (!active) return;
+    let y0: number | null = null;
+    let x0 = 0;
+    let cur = 0;
+    let decided = false;
+    const blocked = () => busy.current || window.scrollY > 2 || Boolean(detailRef.current) || document.documentElement.classList.contains("sheet-open");
+    const start = (e: TouchEvent) => {
+      if (blocked() || e.touches.length !== 1) { y0 = null; return; }
+      y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; cur = 0; decided = false;
+    };
+    const move = (e: TouchEvent) => {
+      if (y0 === null) return;
+      const dy = e.touches[0].clientY - y0;
+      const dx = e.touches[0].clientX - x0;
+      // 横に払う（既読・未読のスワイプ）や上へのスクロールは、引っぱって更新にしない
+      if (!decided && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        decided = true;
+        if (Math.abs(dx) > Math.abs(dy) || dy < 0) { y0 = null; return; }
+        setDragging(true);
+      }
+      if (!decided) return;
+      const next = Math.max(0, Math.min(dy * 0.5, PULL_MAX));
+      if ((cur < PULL_READY) !== (next < PULL_READY) && next >= PULL_READY) haptic("light");
+      cur = next;
+      setPull(next);
+    };
+    const end = () => {
+      if (y0 === null) return;
+      y0 = null;
+      setDragging(false);
+      if (cur >= PULL_READY) void refresh();
+      else setPull(0);
+    };
+    const refresh = async () => {
+      busy.current = true;
+      setRefreshing(true);
+      setPull(52);
+      const t0 = Date.now();
+      const arrived = await autoCheck(true).catch(() => [] as MailItem[]);
+      await new Promise((r) => setTimeout(r, Math.max(0, 700 - (Date.now() - t0)))); // 一瞬で消えないように
+      setRefreshing(false);
+      setPull(0);
+      busy.current = false;
+      haptic(arrived.length ? "success" : "light");
+      toast(arrived.length ? `新着メール ${arrived.length}件` : "新しいメールはありません");
+    };
+    window.addEventListener("touchstart", start, { passive: true });
+    window.addEventListener("touchmove", move, { passive: true });
+    window.addEventListener("touchend", end);
+    window.addEventListener("touchcancel", end);
+    return () => {
+      window.removeEventListener("touchstart", start);
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", end);
+      window.removeEventListener("touchcancel", end);
+    };
+  }, [active, toast]);
 
   useEffect(() => {
     if (!active) return;
@@ -77,6 +144,20 @@ export function MailView({ active, toast }: Props) {
   return (
     <section className="mail-view" aria-label="メール" data-testid="mail-view">
           <div className="mail-body">
+            <div
+              className={`pull ${dragging ? "dragging" : ""} ${refreshing ? "refreshing" : ""}`}
+              style={{ height: pull }}
+              data-testid="pull-refresh"
+              data-state={refreshing ? "refreshing" : pull >= PULL_READY ? "ready" : pull > 0 ? "pulling" : "idle"}
+              aria-hidden={!refreshing}
+              aria-label={refreshing ? "読み込んでいます" : undefined}
+            >
+              <span className="pull-dots">
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <i key={i} style={{ opacity: refreshing ? 1 : Math.min(1, Math.max(0, (pull / PULL_READY) * 5 - i)), animationDelay: `${i * 0.1}s` }} />
+                ))}
+              </span>
+            </div>
             <div className="seg mail-seg" role="tablist" aria-label="メールの種類">
               {SLOTS.map((s) => (
                 <button key={s} role="tab" aria-selected={slot === s} className={`seg-btn ${slot === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSlot(s); }}>

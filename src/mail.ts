@@ -42,7 +42,7 @@ export async function loadMail() {
  * 画面を開いている間は1分ごと・画面に戻ったときに呼ぶ（サーバー側も5分ごとに読んでいる）
  */
 let autoRunning = false;
-export async function autoCheck(): Promise<MailItem[]> {
+export async function autoCheck(force = false): Promise<MailItem[]> {
   if (autoRunning) return [];
   autoRunning = true;
   const wasLoaded = state.loaded;
@@ -50,7 +50,7 @@ export async function autoCheck(): Promise<MailItem[]> {
   try {
     if (state.sources.some((s) => s.status === "ok") || !state.loaded) {
       // 間隔が短すぎる（429）・つないでいない（400）・オフラインのときは、一覧を取り直すだけ
-      await api("/api/mail/check", { method: "POST" }).catch(() => undefined);
+      await api("/api/mail/check", { method: "POST", body: { force } }).catch(() => undefined);
     }
     await loadMail();
     if (!wasLoaded) return [];

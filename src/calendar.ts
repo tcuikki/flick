@@ -20,7 +20,7 @@ export const ROSE = "#e0607e";
 export const MAIN_COLORS: ColorChoice[] = [
   { id: "7", name: "ピーコック", use: "バイト", hex: "#039be5" },
   { id: "", name: "ローズ", use: "ジム", hex: ROSE },
-  { id: "8", name: "グラファイト", use: "就活準備・AIHP・レポート", hex: "#616161" },
+  { id: "8", name: "グラファイト", use: "勉強", hex: "#616161" },
   { id: "10", name: "バジル", use: "就活", hex: "#0b8043" },
   { id: "11", name: "トマト", use: "遊び", hex: "#d50000" },
   { id: "3", name: "ブドウ", use: "大学", hex: "#8e24aa" },

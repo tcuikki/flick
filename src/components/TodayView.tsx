@@ -12,13 +12,13 @@ const HOUR = 56; // 1時間の高さ(px)
 const EMPTY: CalEvent[] = [];
 
 type Props = {
-  fresh: MailItem[];
+  unread: MailItem[];
   onOpenMail: () => void;
   onEdit: (d: EventDraft) => void;
 };
 
 /** 今日：新着メールのお知らせ + Google カレンダーの1日（縦の時間割） */
-export function TodayView({ fresh, onOpenMail, onEdit }: Props) {
+export function TodayView({ unread, onOpenMail, onEdit }: Props) {
   const [date, setDate] = useState(today);
   const [dir, setDir] = useState(0);
   const source = useCal((s) => s.source);
@@ -72,7 +72,7 @@ export function TodayView({ fresh, onOpenMail, onEdit }: Props) {
     ro.observe(document.body);
     window.addEventListener("resize", fit);
     return () => { ro.disconnect(); window.removeEventListener("resize", fit); };
-  }, [source, allDay.length, fresh.length > 0]);
+  }, [source, allDay.length, unread.length > 0]);
 
   // 開いたとき・日付を変えたとき：今日なら今の時刻、ほかの日は最初の予定（なければ 8:00）が見える位置へ
   const scrolledFor = useRef<string | null>(null);
@@ -101,7 +101,7 @@ export function TodayView({ fresh, onOpenMail, onEdit }: Props) {
   return (
     <section className="today" data-testid="today">
       <AnimatePresence initial={false}>
-        {fresh.length > 0 && (
+        {unread.length > 0 && (
           <motion.button
             key="mail"
             className="today-mail"
@@ -113,12 +113,12 @@ export function TodayView({ fresh, onOpenMail, onEdit }: Props) {
             whileTap={{ scale: 0.97 }}
             onClick={() => { haptic("light"); onOpenMail(); }}
           >
-            <span className="today-mail-icon"><MailIcon size={22} /><i>{fresh.length}</i></span>
+            <span className="today-mail-icon"><MailIcon size={22} /><i>{unread.length}</i></span>
             <span className="today-mail-text">
-              <strong>新着メールが {fresh.length}件 来ています</strong>
+              <strong>メールが {unread.length}件 来ています</strong>
               <span className="today-mail-slots">
-                {SLOTS.filter((s) => fresh.some((m) => m.slot === s)).map((s) => (
-                  <b key={s} className={`src-chip src-${s}`} data-testid={`mail-banner-${s}`}>{SLOT_LABEL[s]} {fresh.filter((m) => m.slot === s).length}</b>
+                {SLOTS.filter((s) => unread.some((m) => m.slot === s)).map((s) => (
+                  <b key={s} className={`src-chip src-${s}`} data-testid={`mail-banner-${s}`}>{SLOT_LABEL[s]} {unread.filter((m) => m.slot === s).length}</b>
                 ))}
               </span>
             </span>

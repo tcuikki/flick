@@ -531,8 +531,17 @@ html.signed-out .sk-tabs, html.signed-out .sk-fab { display: none; }
 .color-chip.on { background: color-mix(in srgb, var(--c) 12%, #fff); box-shadow: inset 0 0 0 1.5px var(--c); }
 .color-chip:disabled { opacity: 0.35; }
 .color-dot { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--c); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06); }
-.color-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.1; }
-.color-text b { font-size: 13px; font-weight: 800; color: var(--ink); }
-.color-text small { font-size: 10.5px; font-weight: 600; color: var(--ink-2); }
+.color-text { font-size: 13.5px; font-weight: 800; color: var(--ink); }
+.color-chip.dot-only { padding: 0 7px; }
 .color-more { height: 38px; padding: 0 12px; border-radius: 19px; font-size: 13px; font-weight: 700; color: var(--blue); }
 .event-color-name { margin: 6px 4px 0; font-size: 12.5px; color: var(--ink-2); }
+
+/* 引っぱって更新（メール） */
+.pull { display: flex; align-items: flex-end; justify-content: center; overflow: hidden; transition: height 0.35s var(--spring); }
+.pull.dragging { transition: none; }
+.pull-dots { display: inline-flex; gap: 7px; padding-bottom: 16px; }
+.pull-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); transition: opacity 0.15s, background 0.2s; }
+.pull[data-state="ready"] .pull-dots i { background: var(--blue); }
+.pull.refreshing .pull-dots i { background: var(--blue); animation: pull-dot 0.9s ease-in-out infinite; }
+@keyframes pull-dot { 0%, 100% { transform: translateY(0) scale(0.8); opacity: 0.45; } 40% { transform: translateY(-7px) scale(1.15); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pull.refreshing .pull-dots i { animation: none; } }

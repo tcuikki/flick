@@ -286,17 +286,14 @@ function ColorChip({ c, on, disabled, onPick }: { c: ColorChoice; on: boolean; d
       role="radio"
       aria-checked={on}
       aria-label={`${c.name}${c.use ? `（${c.use}）` : ""}`}
-      className={`color-chip ${on ? "on" : ""}`}
+      className={`color-chip ${on ? "on" : ""} ${c.use ? "" : "dot-only"}`}
       style={{ "--c": c.hex } as React.CSSProperties}
       disabled={disabled && !on}
       data-testid={`color-${c.id || "default"}`}
       onClick={onPick}
     >
       <i className="color-dot">{on && <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" /></svg>}</i>
-      <span className="color-text">
-        <b>{c.use || c.name}</b>
-        {c.use && <small>{c.name}</small>}
-      </span>
+      {c.use && <b className="color-text">{c.use}</b>}
     </button>
   );
 }

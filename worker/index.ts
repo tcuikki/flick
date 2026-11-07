@@ -4,7 +4,7 @@ import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arct
 import { enrichMemo, planTasks, transcribe } from "./ai";
 import {
   GMAIL_SCOPE, MS_SCOPE, SLOTS, type Slot,
-  bodyOf, encryptToken, mockArrive, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
+  bodyOf, encryptToken, mockArrive, mockReadInGmail, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
 } from "./mail";
 import {
   CAL_EVENTS_SCOPE, CAL_LIST_SCOPE, createEvent, deleteEvent, eventsForDay, mockSeedHoliday, saveCalSource, updateEvent, validateInput, type WriteResult,
@@ -422,11 +422,13 @@ app.get("/mail", async (c) => {
 
 app.post("/mail/check", async (c) => {
   const uid = c.get("user").id;
+  const b = await c.req.json<{ force?: boolean }>().catch(() => ({}) as any);
   const last = await c.env.DB.prepare("SELECT MAX(checked_at) AS t, COUNT(*) AS n FROM mail_sources WHERE user_id = ?").bind(uid).first<{ t: number | null; n: number }>();
   if (!last?.n) return c.json({ error: "not_connected" }, 400);
   // 画面を開いている間は1分ごとに自動で呼ばれる。短すぎる連続呼び出しだけ止める
   // （エラーにはせず、読み込みを飛ばしたことだけ返す。画面は一覧を取り直す）
-  if (last.t && Date.now() - last.t < 15_000) return c.json({ skipped: true });
+  // 引っぱって更新（force）は5秒、自動は15秒あける
+  if (last.t && Date.now() - last.t < (b.force ? 5_000 : 15_000)) return c.json({ skipped: true });
   return c.json({ result: await refreshUser(c.env, uid) });
 });
 
@@ -552,6 +554,15 @@ app.post("/mail/dev-new", async (c) => {
   if (!devOnly(c)) return c.notFound();
   const src = await c.env.DB.prepare("SELECT email FROM mail_sources WHERE user_id = ? AND slot = 'personal'").bind(c.get("user").id).first<{ email: string }>();
   if (src) mockArrive(src.email);
+  return c.json({ ok: true });
+});
+
+/** E2E テスト専用：個人の枠のメールを、Gmail（ほかの端末）で読んだことにする */
+app.post("/mail/dev-gmail-read", async (c) => {
+  if (!devOnly(c)) return c.notFound();
+  const b = await c.req.json<{ id?: string }>().catch(() => ({}) as any);
+  const src = await c.env.DB.prepare("SELECT email FROM mail_sources WHERE user_id = ? AND slot = 'personal'").bind(c.get("user").id).first<{ email: string }>();
+  if (src && b.id) mockReadInGmail(src.email, String(b.id));
   return c.json({ ok: true });
 });
 

@@ -140,13 +140,21 @@ async function gmailMeta(access: string, email: string, ids: string[]): Promise<
 }
 
 /** 受信箱の新しい順に ids を取り、まだ持っていないものだけ中身を取る */
-async function fetchGmail(env: Env, access: string, email: string, known: Set<string>): Promise<{ ids: string[]; fresh: Raw[] }> {
+/**
+ * 受信箱の新しい順に ids を取り、まだ持っていないものだけ中身を取る。
+ * あわせて、受信箱の未読の ids も取る（Gmail で読んだメールを Flick でも既読にするため）。
+ * 新しい30件に入るメールは、未読だけで並べても30件目以内に入るので、未読も30件まで見れば足りる
+ */
+async function fetchGmail(env: Env, access: string, email: string, known: Set<string>): Promise<{ ids: string[]; fresh: Raw[]; unread?: Set<string> }> {
   if (env.E2E === "1") {
     const all = mockMails(email);
-    return { ids: all.map((m) => m.id), fresh: all.filter((m) => !known.has(m.id)) };
+    return { ids: all.map((m) => m.id), fresh: all.filter((m) => !known.has(m.id)), unread: new Set(all.filter((m) => !m.read).map((m) => m.id)) };
   }
-  const ids = await gmailList(access, "labelIds=INBOX", MAX_PER_SLOT);
-  return { ids, fresh: await gmailMeta(access, email, ids.filter((id) => !known.has(id))) };
+  const [ids, unread] = await Promise.all([
+    gmailList(access, "labelIds=INBOX", MAX_PER_SLOT),
+    gmailList(access, "labelIds=INBOX&labelIds=UNREAD", MAX_PER_SLOT),
+  ]);
+  return { ids, fresh: await gmailMeta(access, email, ids.filter((id) => !known.has(id))), unread: new Set(unread) };
 }
 
 /** キーワード検索（受信箱以外・古いメールも含む。Gmail の検索と同じ書き方が使える） */
@@ -361,7 +369,7 @@ async function refreshSlot(env: Env, userId: string, src: SourceRow): Promise<Sl
   const now = Date.now();
   const { results } = await env.DB.prepare("SELECT id FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, src.slot).all<{ id: string }>();
   const known = new Set(results.map((r) => r.id));
-  let fetched: { ids: string[]; fresh: Raw[] };
+  let fetched: { ids: string[]; fresh: Raw[]; unread?: Set<string> };
   try {
     const access = await accessFor(env, userId, src);
     fetched = src.provider === "microsoft" ? await fetchOutlook(env, access, known) : await fetchGmail(env, access, src.email, known);
@@ -376,10 +384,25 @@ async function refreshSlot(env: Env, userId: string, src: SourceRow): Promise<Sl
 
   const stmts = fetched.fresh.map((m) =>
     env.DB.prepare(
-      `INSERT OR IGNORE INTO mail_items (user_id, slot, id, from_name, from_addr, subject, date, snippet, link, read, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(userId, src.slot, m.id, m.from_name, m.from_addr, m.subject, m.date, m.snippet, m.link, m.read ? 1 : 0, now),
+      `INSERT OR IGNORE INTO mail_items (user_id, slot, id, from_name, from_addr, subject, date, snippet, link, read, fetched_at, gmail_unread)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(userId, src.slot, m.id, m.from_name, m.from_addr, m.subject, m.date, m.snippet, m.link, m.read ? 1 : 0, now, m.read ? 0 : 1),
   );
+  // Gmail で読んだ（未読 → 既読に変わった）メールは、Flick でも既読にする。
+  // Gmail 側が変わったときだけ動かすので、Flick で「未読に戻す」をしたメールは戻さない
+  if (fetched.unread) {
+    const freshIds = new Set(fetched.fresh.map((m) => m.id));
+    for (const id of fetched.ids) {
+      if (!known.has(id) || freshIds.has(id)) continue;
+      const u = fetched.unread.has(id) ? 1 : 0;
+      stmts.push(
+        env.DB.prepare(
+          `UPDATE mail_items SET read = CASE WHEN COALESCE(gmail_unread, 1) = 1 AND ? = 0 THEN 1 ELSE read END, gmail_unread = ?
+           WHERE user_id = ? AND slot = ? AND id = ?`,
+        ).bind(u, u, userId, src.slot, id),
+      );
+    }
+  }
   // 受信箱から無くなったもの（アーカイブ・削除）は Flick からも消す
   const keep = fetched.ids;
   stmts.push(
@@ -424,6 +447,9 @@ export const rowToItem = (r: any): MailItem => ({ ...r, read: Boolean(r.read) })
 /** E2E 用：あとから届いたメール（dev-new で足す） */
 const mockArrived = new Set<string>();
 export const mockArrive = (email: string) => { mockArrived.add(email); };
+/** E2E 用：Gmail（ほかの端末）で読んだメール */
+const mockGmailRead = new Set<string>();
+export const mockReadInGmail = (email: string, id: string) => { mockGmailRead.add(`${email}:${id}`); };
 
 /** メールアドレスで枠のモックを分ける（aihp… = 事業、…ukezara… = 大学の受け皿、それ以外 = 個人）。old = 受信箱にない古いメールも含める */
 function mockMails(email: string, old = false): Raw[] {
@@ -451,7 +477,9 @@ function mockMails(email: string, old = false): Raw[] {
     mk("g1", "三井住友カード", "info@example-card.jp", "カードご利用のお知らせ", t + 60_000, "ご利用日 11月7日 ご利用先 Amazon ご利用金額 3,280円", false),
     mk("g2", "NTTデータ 採用担当", "recruit@example.co.jp", "一次面接日程のご案内", t + 180_000, "11月12日 10:00 からの一次面接についてご案内します。", false),
     mk("g3", "Amazon.co.jp", "store-news@amazon.co.jp", "タイムセール開催中", t, "今だけ最大50%オフ", true),
-  ].sort((a, b) => b.date - a.date);
+  ]
+    .map((m) => (mockGmailRead.has(`${email}:${m.id}`) ? { ...m, read: true } : m))
+    .sort((a, b) => b.date - a.date);
 }
 
 /** 本文のモック：g1 は日本語のメールでよくある ISO-2022-JP、g2 は HTML のメール */

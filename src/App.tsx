@@ -15,7 +15,7 @@ import { AiSheet } from "./components/AiSheet";
 import { MailView } from "./components/MailView";
 import { TodayView } from "./components/TodayView";
 import { EventSheet, type EventDraft } from "./components/EventSheet";
-import { SLOTS, SLOT_LABEL, autoCheck, loadMail, newUnread, useMail } from "./mail";
+import { SLOTS, SLOT_LABEL, autoCheck, loadMail, useMail } from "./mail";
 import { clearCalCache, loadDay, today } from "./calendar";
 import { primeKeyboard } from "./focus";
 import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
@@ -52,8 +52,8 @@ export function App() {
   const mailExpired = useMail((m) => m.sources.some((s) => s.status === "expired"));
   // 選び出した配列を毎回作ると再描画が止まらなくなるので、元のデータだけ購読して useMemo で計算する
   const mailItems = useMail((m) => m.items);
-  const openedAt = useMail((m) => m.openedAt);
-  const fresh = useMemo(() => newUnread({ items: mailItems, openedAt }), [mailItems, openedAt]);
+  // 溜まっている未読（今日の一番上と、下のタブの数字に出す）
+  const unread = useMemo(() => mailItems.filter((m) => !m.read), [mailItems]);
 
   const goPage = useCallback((p: Page) => {
     setPageState((cur) => {
@@ -401,7 +401,7 @@ export function App() {
               transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
               {page === "today" && (
-                <TodayView fresh={fresh} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
+                <TodayView unread={unread} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
               )}
               {page === "mail" && <MailView active toast={showToast} />}
               {page === "tasks" && (
@@ -416,7 +416,7 @@ export function App() {
       </main>
 
       {booted && auth !== "out" && (
-        <BottomNav value={page} onChange={goPage} mailBadge={fresh.length} mailWarn={mailExpired} taskCount={counts.todo + counts.doing} />
+        <BottomNav value={page} onChange={goPage} mailBadge={unread.length} mailWarn={mailExpired} taskCount={counts.todo + counts.doing} />
       )}
 
       {booted && auth === "in" && page !== "mail" && (

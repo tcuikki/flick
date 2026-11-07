@@ -163,7 +163,11 @@ test.describe("今日（Google カレンダー）", () => {
     await page.getByTestId("event-title").fill("自家製麺いけだ");
     const colors = page.getByTestId("event-colors").getByRole("radio");
     await expect(colors).toHaveCount(7);
-    await expect(colors.locator("b")).toHaveText(["バイト", "ジム", "就活準備・AIHP・レポート", "就活", "遊び", "大学", "給料日"]);
+    await expect(colors.locator("b")).toHaveText(["バイト", "ジム", "勉強", "就活", "遊び", "大学", "給料日"]);
+    // 色の名前（ピーコック・ローズ…）は書かない
+    for (const name of ["ピーコック", "ローズ", "グラファイト", "バジル", "トマト", "ブドウ", "バナナ"]) {
+      await expect(page.getByTestId("event-colors")).not.toContainText(name);
+    }
     await expect(page.getByTestId("color-default")).toHaveAttribute("aria-checked", "true");
     await page.getByTestId("color-7").tap();
     await expect(page.getByTestId("color-7")).toHaveAttribute("aria-checked", "true");

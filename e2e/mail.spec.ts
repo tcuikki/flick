@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { ORIGIN, card, collectErrors, login, ready, serverTasks } from "./helpers";
+import { ORIGIN, settled, card, collectErrors, login, ready, serverTasks } from "./helpers";
 
 let errors: string[] = [];
 test.beforeEach(({ page }) => {
@@ -184,7 +184,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await expect(card(page, "【至急】履修登録の確認について")).toBeVisible();
   });
 
-  test("自動更新で新しいメールが来ると「今日」の一番上に強調して出る。メールを開いて戻ると消える", async ({ page }) => {
+  test("「今日」の一番上に、溜まっている未読を「個人 2・大学 1」のように出す。読むと減り、全部読むと消える", async ({ page }) => {
     await login(page);
     await devConnect(page, "personal");
     await devConnect(page, "univ");
@@ -192,7 +192,7 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.goto("/");
     await ready(page);
     const banner = page.getByTestId("mail-banner");
-    await expect(banner).toContainText("新着メールが 3件 来ています");
+    await expect(banner).toContainText("メールが 3件 来ています");
     await expect(page.getByTestId("mail-banner-personal")).toHaveText("個人 2");
     await expect(page.getByTestId("mail-banner-univ")).toHaveText("大学 1");
     await expect(page.getByTestId("mail-banner-business")).toHaveCount(0);
@@ -201,9 +201,33 @@ test.describe("メール（個人・事業・大学）", () => {
     const nav = (await page.getByTestId("day-nav").boundingBox())!;
     expect(b.y).toBeLessThan(nav.y);
     await expect(page.getByTestId("mail-badge")).toHaveText("3");
+
+    // メールを開いただけでは消えない（まだ読んでいないので）
     await banner.tap();
+    await settled(page, "mail");
     await expect(page.getByTestId("mail-view")).toBeVisible();
     await page.getByTestId("nav-today").tap();
+    await settled(page, "today");
+    await expect(banner).toContainText("メールが 3件 来ています");
+
+    // 個人を全部読むと、大学だけが残る
+    await page.getByTestId("nav-mail").tap();
+    await settled(page, "mail");
+    await page.getByTestId("mail-tab-personal").tap();
+    await page.getByTestId("mail-read-all").tap();
+    await page.getByTestId("nav-today").tap();
+    await settled(page, "today");
+    await expect(banner).toContainText("メールが 1件 来ています");
+    await expect(page.getByTestId("mail-banner-personal")).toHaveCount(0);
+    await expect(page.getByTestId("mail-badge")).toHaveText("1");
+
+    // 全部読むと消える（開き直しても出ない）
+    await page.getByTestId("nav-mail").tap();
+    await settled(page, "mail");
+    await page.getByTestId("mail-tab-univ").tap();
+    await page.getByTestId("mail-read-all").tap();
+    await page.getByTestId("nav-today").tap();
+    await settled(page, "today");
     await expect(banner).toHaveCount(0);
     await expect(page.getByTestId("mail-badge")).toHaveCount(0);
     await page.reload();
@@ -219,19 +243,90 @@ test.describe("メール（個人・事業・大学）", () => {
     await page.goto("/");
     await ready(page);
     // 開いたときに自動で読み込む（↻ を押さなくても）
-    await expect(page.getByTestId("mail-banner")).toContainText("新着メールが 2件 来ています");
+    await expect(page.getByTestId("mail-banner")).toContainText("メールが 2件 来ています");
     await expect(page.getByTestId("mail-banner")).not.toContainText("更新");
-    await page.getByTestId("nav-mail").tap();
-    await page.getByTestId("nav-today").tap();
-    await expect(page.getByTestId("mail-banner")).toHaveCount(0);
 
     // 新しいメールが1通届く → サーバーの自動更新（5分ごと）→ 画面は1分ごと・戻ったときに読み直す
     await page.request.post("/api/mail/dev-new", { headers: { origin: ORIGIN } });
     await cron(page);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(page.getByTestId("toast").filter({ hasText: "新着メール（個人）：新しい予定の招待" })).toBeVisible();
-    await expect(page.getByTestId("mail-banner")).toContainText("新着メールが 1件 来ています");
-    await expect(page.getByTestId("mail-badge")).toHaveText("1");
+    await expect(page.getByTestId("mail-banner")).toContainText("メールが 3件 来ています");
+    await expect(page.getByTestId("mail-badge")).toHaveText("3");
+  });
+
+  test("Gmail（ほかの端末）で読んだメールは Flick でも既読になる。Flick で「未読に戻す」をしたメールは勝手に戻さない", async ({ page }) => {
+    await login(page);
+    const email = `sync${Date.now()}@gmail.com`;
+    await page.request.post("/api/mail/dev-connect", { headers: { origin: ORIGIN }, data: { slot: "personal", email } });
+    await cron(page);
+    const readOf = async (id: string) => ((await (await page.request.get("/api/mail")).json()).items as any[]).find((m) => m.id === id).read;
+    expect(await readOf("g1")).toBe(false);
+    // g3 は Gmail では既読。Flick で未読に戻しておく
+    await page.request.post("/api/mail/items/personal/g3/read", { headers: { origin: ORIGIN }, data: { read: false } });
+    // g1 を Gmail で読む
+    await page.request.post("/api/mail/dev-gmail-read", { headers: { origin: ORIGIN }, data: { id: "g1" } });
+    await cron(page);
+    expect(await readOf("g1")).toBe(true);
+    expect(await readOf("g2")).toBe(false);
+    expect(await readOf("g3")).toBe(false);
+  });
+
+  test("メールのページの一番上で下に引っぱると、丸い点が出て読み込む", async ({ page }) => {
+    await login(page);
+    await devConnect(page, "personal");
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("nav-mail").tap();
+    await settled(page, "mail");
+    await page.waitForTimeout(6_000); // 開いたときの自動読み込みから間を空ける（引っぱったときは5秒あけば読みに行く）
+    const forced: unknown[] = [];
+    page.on("request", (r) => { if (r.url().endsWith("/api/mail/check")) forced.push(r.postDataJSON()); });
+    const pull = page.getByTestId("pull-refresh");
+    await expect(pull).toHaveAttribute("data-state", "idle");
+    const cdp = await page.context().newCDPSession(page);
+    const x = 200;
+    let y = 260;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let i = 0; i < 12; i++) {
+      y += 16;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+      await page.waitForTimeout(16);
+    }
+    await expect(pull).toHaveAttribute("data-state", "ready");
+    expect(await pull.locator("i").count()).toBe(5);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(pull).toHaveAttribute("data-state", "refreshing");
+    await expect(page.getByTestId("toast")).toContainText("新しいメールはありません");
+    await expect(pull).toHaveAttribute("data-state", "idle");
+    expect(forced).toContainEqual({ force: true });
+    await cdp.detach();
+  });
+
+  test("少しだけ引いて離したときは読み込まない。横のスワイプでも読み込まない", async ({ page }) => {
+    await login(page);
+    await devConnect(page, "personal");
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("nav-mail").tap();
+    await settled(page, "mail");
+    let forced = 0;
+    page.on("request", (r) => { if (r.url().endsWith("/api/mail/check") && (r.postDataJSON() as any)?.force) forced++; });
+    const cdp = await page.context().newCDPSession(page);
+    const drag = async (dx: number, dy: number) => {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 200, y: 260 }] });
+      for (let i = 1; i <= 8; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: 200 + (dx * i) / 8, y: 260 + (dy * i) / 8 }] });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    };
+    await drag(0, 60); // 30px しか引いていない
+    await drag(160, 40); // 横
+    await page.waitForTimeout(800);
+    expect(forced).toBe(0);
+    await expect(page.getByTestId("pull-refresh")).toHaveAttribute("data-state", "idle");
+    await cdp.detach();
   });
 
   test("画面を開いている間は1分ごとに自動で読み込む", async ({ page }) => {
