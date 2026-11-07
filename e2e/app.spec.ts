@@ -33,6 +33,9 @@ test.describe("＋ボタンで追加", () => {
     expect(Math.abs(fab.width - fab.height)).toBeLessThan(1);
     expect(fab.y + fab.height).toBeLessThan(tasks.y); // タスクのタブより上
     expect(fab.x + fab.width / 2).toBeGreaterThan(tasks.x); // タスクのタブの列
+    await expect(page.getByTestId("add")).toHaveAttribute("aria-label", "予定を追加"); // 「今日」では予定
+    await gotoTasks(page);
+    await expect(page.getByTestId("add")).toHaveAttribute("aria-label", "タスクを追加");
     const radius = await page.getByTestId("add").evaluate((el) => getComputedStyle(el).borderRadius);
     expect(radius).toBe("50%");
   });
@@ -41,6 +44,7 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("add").tap();
     const sheet = page.getByTestId("new-sheet");
     await expect(sheet).toBeVisible();
@@ -64,6 +68,7 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("add").tap();
     const sheet = page.getByTestId("new-sheet");
     await expect(sheet).toBeVisible();
@@ -88,6 +93,7 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("add").tap();
     await expect(page.getByTestId("new-sheet")).toBeVisible();
     await page.waitForTimeout(600);
@@ -109,6 +115,7 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("ai-open").tap();
     await page.waitForTimeout(600);
     expect((await page.getByTestId("ai-sheet").boundingBox())!.y).toBeLessThan(80);
@@ -123,6 +130,7 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("add").tap();
     await page.getByTestId("new-sheet").getByRole("radio", { name: "来週" }).tap();
     await page.getByTestId("new-title").fill("明日までに資料作成");
@@ -136,13 +144,13 @@ test.describe("＋ボタンで追加", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page);
     await page.getByTestId("add").tap();
     await expect(page.getByTestId("new-add")).toBeDisabled();
     await page.getByTestId("new-title").fill("   ");
     await expect(page.getByTestId("new-add")).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("new-sheet")).toHaveCount(0);
-    await gotoTasks(page);
     await expect(page.getByTestId("count-todo")).toHaveText("0");
   });
 
@@ -405,6 +413,7 @@ test.describe("AI (Workers AI)", () => {
     await login(page);
     await page.goto("/");
     await ready(page);
+    await gotoTasks(page); // タスクのマイクは「タスク」のページ（「今日」のマイクは予定用）
   });
 
   test("自然文のメモからタスク名と期限を整理する", async ({ page }) => {

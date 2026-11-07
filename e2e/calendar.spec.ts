@@ -31,7 +31,10 @@ test.describe("今日（Google カレンダー）", () => {
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("今日");
     await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-selected", "true");
     await expect(page.getByTestId("cal-connect-card")).toContainText("Googleカレンダーをつなぐ");
-    await expect(page.getByTestId("event-add")).toHaveCount(0);
+    // つなぐ前に ＋ やマイクを押しても、先につなぐよう伝える
+    await page.getByTestId("add").tap();
+    await expect(page.getByTestId("toast")).toContainText("カレンダーをつなぐ");
+    await expect(page.getByTestId("event-sheet")).toHaveCount(0);
 
     const res = await page.request.get("/api/cal/connect", { maxRedirects: 0 });
     expect(res.status()).toBe(302);
@@ -78,13 +81,13 @@ test.describe("今日（Google カレンダー）", () => {
     await expect(page.getByTestId("now-line")).toBeAttached();
   });
 
-  test("「＋予定」から追加すると、Google カレンダーに保存されて時間割に出る", async ({ page }) => {
+  test("「今日」の右下の ＋ から追加すると、Google カレンダーに保存されて時間割に出る", async ({ page }) => {
     await login(page);
     await connect(page);
     await page.goto("/");
     await ready(page);
     await expect(page.getByTestId("day-empty")).toContainText("今日の予定はありません");
-    await page.getByTestId("event-add").tap();
+    await page.getByTestId("add").tap();
     const sheet = page.getByTestId("event-sheet");
     await expect(sheet).toBeVisible();
     await expect(page.getByTestId("event-save")).toBeDisabled(); // タイトルが空のうちは押せない
@@ -99,6 +102,73 @@ test.describe("今日（Google カレンダー）", () => {
     await expect(ev(page, "企業説明会（オンライン）")).toContainText("15:00〜16:30");
     const saved = await serverEvents(page, isoDate(0));
     expect(saved).toMatchObject([{ title: "企業説明会（オンライン）", start: `${isoDate(0)}T15:00`, end: `${isoDate(0)}T16:30`, allDay: false, location: "Zoom" }]);
+  });
+
+  test("＋ は見ている日の予定を追加する。終了日も選べて、何日かにわたる予定を入れられる", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("day-next").tap();
+    await page.getByTestId("add").tap();
+    await expect(page.getByTestId("event-date")).toHaveValue(isoDate(1));
+    await expect(page.getByTestId("event-start")).toHaveValue("09:00");
+    // 終了の行にも日付がある
+    await expect(page.getByTestId("event-end-date")).toBeVisible();
+    await expect(page.getByTestId("event-end-date")).toHaveValue(isoDate(1));
+    await page.getByTestId("event-title").fill("合宿");
+    await page.getByTestId("event-end-date").fill(isoDate(3));
+    await page.getByTestId("event-end").fill("18:00");
+    // 開始日を動かすと、長さを保って終了日も動く
+    await page.getByTestId("event-date").fill(isoDate(2));
+    await expect(page.getByTestId("event-end-date")).toHaveValue(isoDate(4));
+    await page.getByTestId("event-date").fill(isoDate(1));
+    await expect(page.getByTestId("event-end-date")).toHaveValue(isoDate(3));
+    await page.getByTestId("event-save").tap();
+    await expect(page.getByTestId("toast")).toContainText("予定を追加しました");
+    const saved = (await (await page.request.get(`/api/cal/events?date=${isoDate(1)}&days=3`)).json()).events;
+    expect(saved).toMatchObject([{ title: "合宿", start: `${isoDate(1)}T09:00`, end: `${isoDate(3)}T18:00`, allDay: false }]);
+    // 真ん中の日も、時間割に一日中かかって出る
+    await page.getByTestId("day-next").tap();
+    await expect(ev(page, "合宿")).toBeVisible();
+  });
+
+  test("「今日」のマイクは予定用：話した内容から日付・時刻・色を読み取り、確かめてから Google カレンダーに入れる", async ({ page }) => {
+    await login(page);
+    await connect(page);
+    await page.goto("/");
+    await ready(page);
+    await expect(page.getByTestId("ai-open")).toHaveAttribute("aria-label", "話して予定を入れる");
+    await page.getByTestId("ai-open").tap();
+    const sheet = page.getByTestId("ai-sheet");
+    await expect(sheet).toContainText("入れたい予定を話してください");
+    await page.getByTestId("ai-text").fill("明日の10時から12時までアルファシステムズの面接。ニトリでバイト17時から");
+    await expect(page.getByTestId("ai-plan")).toHaveText("予定にする");
+    await page.getByTestId("ai-plan").tap();
+    const items = page.getByTestId("plan-event");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0).getByTestId("plan-title")).toHaveValue("アルファシステムズの面接");
+    await expect(items.nth(0).getByTestId("plan-time")).toHaveText("10:00");
+    await expect(items.nth(0).getByTestId("plan-end")).toHaveText("12:00");
+    await expect(items.nth(0).getByTestId("plan-color")).toHaveText("就活"); // 面接 → バジル
+    await expect(items.nth(1).getByTestId("plan-title")).toHaveValue("ニトリでバイト");
+    await expect(items.nth(1).getByTestId("plan-end")).toHaveText("18:00"); // 終わりを言わなければ1時間
+    await expect(items.nth(1).getByTestId("plan-color")).toHaveText("バイト");
+    // 色は押すと変わる
+    await items.nth(1).getByTestId("plan-color").tap();
+    await expect(items.nth(1).getByTestId("plan-color")).toHaveText("ジム");
+    await items.nth(1).getByTestId("plan-color").tap();
+    await expect(items.nth(1).getByTestId("plan-color")).toHaveText("勉強");
+    for (let i = 0; i < 5; i++) await items.nth(1).getByTestId("plan-color").tap(); // 一周してバイトに戻る
+    await expect(items.nth(1).getByTestId("plan-color")).toHaveText("バイト");
+    // タスクには入らない
+    await page.getByTestId("ai-add").tap();
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByTestId("toast")).toContainText("2件の予定を入れました");
+    await expect(ev(page, "ニトリでバイト")).toBeVisible();
+    expect(await serverEvents(page, isoDate(1))).toMatchObject([{ title: "アルファシステムズの面接", start: `${isoDate(1)}T10:00`, end: `${isoDate(1)}T12:00`, colorId: "10" }]);
+    expect(await serverEvents(page, isoDate(0))).toMatchObject([{ title: "ニトリでバイト", start: `${isoDate(0)}T17:00`, end: `${isoDate(0)}T18:00`, colorId: "7" }]);
+    expect((await (await page.request.get("/api/tasks")).json()).tasks).toEqual([]);
   });
 
   test("空いている時間を押すと、その時刻から始まる予定を追加できる", async ({ page }) => {
@@ -159,7 +229,7 @@ test.describe("今日（Google カレンダー）", () => {
     const bg = (title: string) => ev(page, title).evaluate((el) => getComputedStyle(el).boxShadow);
     expect(await bg("ジム")).toContain("rgb(224, 96, 126)");
 
-    await page.getByTestId("event-add").tap();
+    await page.getByTestId("add").tap();
     await page.getByTestId("event-title").fill("自家製麺いけだ");
     const colors = page.getByTestId("event-colors").getByRole("radio");
     await expect(colors).toHaveCount(7);
@@ -168,21 +238,26 @@ test.describe("今日（Google カレンダー）", () => {
     for (const name of ["ピーコック", "ローズ", "グラファイト", "バジル", "トマト", "ブドウ", "バナナ"]) {
       await expect(page.getByTestId("event-colors")).not.toContainText(name);
     }
-    await expect(page.getByTestId("color-default")).toHaveAttribute("aria-checked", "true");
+    // 名前から色を推測する（いけだ → バイト）
+    await expect(page.getByTestId("color-7")).toHaveAttribute("aria-checked", "true");
+    // 自分で選んだら、そのあと名前を変えても動かさない
+    await page.getByTestId("color-11").tap();
+    await page.getByTestId("event-title").fill("自家製麺いけだ シフト");
+    await expect(page.getByTestId("color-11")).toHaveAttribute("aria-checked", "true");
     await page.getByTestId("color-7").tap();
     await expect(page.getByTestId("color-7")).toHaveAttribute("aria-checked", "true");
     await page.getByTestId("event-save").tap();
-    await expect(ev(page, "自家製麺いけだ")).toBeVisible();
-    expect(await bg("自家製麺いけだ")).toContain("rgb(3, 155, 229)");
-    expect((await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ")).toMatchObject({ colorId: "7" });
+    await expect(ev(page, "自家製麺いけだ シフト")).toBeVisible();
+    expect(await bg("自家製麺いけだ シフト")).toContain("rgb(3, 155, 229)");
+    expect((await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ シフト")).toMatchObject({ colorId: "7" });
 
     // ほかの色も選べる。ローズに戻すと色を外す（カレンダーの色）
-    await ev(page, "自家製麺いけだ").tap();
+    await ev(page, "自家製麺いけだ シフト").tap();
     await page.getByTestId("event-colors-more").tap();
     await expect(page.getByTestId("event-colors").getByRole("radio")).toHaveCount(12);
     await page.getByTestId("color-default").tap();
     await page.getByTestId("event-save").tap();
-    await expect.poll(async () => (await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ")?.colorId).toBe("");
+    await expect.poll(async () => (await serverEvents(page, today)).find((e) => e.title === "自家製麺いけだ シフト")?.colorId).toBe("");
 
     // おかしな色は弾く
     const r = await page.request.post("/api/cal/events", {

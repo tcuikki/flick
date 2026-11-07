@@ -204,3 +204,123 @@ function mockPlan(text: string, today: string): PlannedTask[] {
       }),
   );
 }
+
+/* ---------- 話した内容 → 予定（Google カレンダー） ---------- */
+
+const HM = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+export type PlannedEvent = { title: string; date: string; end_date: string; start: string | null; end: string | null; all_day: boolean; location: string };
+
+const normHM = (v: unknown): string | null => {
+  if (typeof v !== "string") return null;
+  const m = v.trim().match(HM);
+  return m ? `${m[1].padStart(2, "0")}:${m[2]}` : null;
+};
+const plusHour = (hm: string) => {
+  const [h, m] = hm.split(":").map(Number);
+  const t = Math.min(h * 60 + m + 60, 23 * 60 + 59);
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+};
+
+/** AI の出力を検証して、カレンダーに入れられる形だけを残す。時刻が無ければ終日、終わりが無ければ1時間 */
+export function cleanEvents(list: unknown, baseDate: string): PlannedEvent[] {
+  if (!Array.isArray(list)) return [];
+  const out: PlannedEvent[] = [];
+  for (const e of list) {
+    const title = typeof e?.title === "string" ? e.title.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    if (!title) continue;
+    const date = isRealDate(e?.date) ? e.date : baseDate;
+    let end_date = isRealDate(e?.end_date) && e.end_date >= date ? e.end_date : date;
+    const start = normHM(e?.start);
+    let end = normHM(e?.end);
+    const all_day = !start;
+    if (start && (!end || (end <= start && end_date === date))) {
+      // 終わりが始まり以前なら翌日にまたぐ（例 22:00〜2:00）。無ければ1時間
+      if (end && end <= start) end_date = addDays(date, 1);
+      else end = plusHour(start);
+    }
+    out.push({ title, date, end_date, start, end: all_day ? null : end, all_day, location: typeof e?.location === "string" ? e.location.trim().slice(0, 200) : "" });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+/** 話した内容 → 予定の案。人が確かめてから追加する。日付が言われていなければ baseDate（見ている日） */
+export async function planEvents(env: Env, text: string, today: string, baseDate: string): Promise<{ events: PlannedEvent[] }> {
+  if (env.E2E === "1") return { events: mockEvents(text, today, baseDate) };
+  const weekday = WEEK[new Date(`${today}T00:00:00Z`).getUTCDay()];
+  const raw = await env.AI.run(env.AI_MODEL as any, {
+    messages: [
+      {
+        role: "system",
+        content:
+          `あなたはカレンダーの秘書です。ユーザーが話した内容から、カレンダーに入れる予定を取り出します。\n` +
+          `今日は ${today}（${weekday}曜日）です。日付の言及がない予定は ${baseDate} の予定とします。\n` +
+          `- events: 予定の配列。最大10件。予定が無ければ空配列。\n` +
+          `- title: 予定の名前。ユーザーの言葉と漢字をできるだけそのまま使い、新しい情報を足さない。日付や時刻の言葉（「明日の」「10時から」など）は入れない。\n` +
+          `- date: 始まる日を YYYY-MM-DD で。「明日」「金曜」「来週の月曜」などは今日を基準に計算する。\n` +
+          `- end_date: 終わる日（何日か続く予定のとき）。1日の予定なら date と同じ。\n` +
+          `- start / end: 時刻を 24時間の HH:MM で（「午後3時」は 15:00、「10時半」は 10:30）。時刻の言及がなければ null（終日の予定になる）。終わりの言及がなければ end は null。\n` +
+          `- location: 場所の言及があれば短く。なければ空文字。`,
+      },
+      { role: "user", content: text },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        type: "object",
+        properties: {
+          events: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                date: { type: "string" },
+                end_date: { type: ["string", "null"] },
+                start: { type: ["string", "null"] },
+                end: { type: ["string", "null"] },
+                location: { type: "string" },
+              },
+              required: ["title", "date", "start", "end"],
+            },
+          },
+        },
+        required: ["events"],
+      },
+    },
+    max_tokens: 900,
+    temperature: 0,
+  } as any);
+  const j = parseResponse(raw);
+  return { events: cleanEvents(j?.events, baseDate) };
+}
+
+/** E2E 用: 文ごとに1件。「明日」などの日付と「10時から12時」「15時半」などの時刻を読む */
+function mockEvents(text: string, today: string, baseDate: string): PlannedEvent[] {
+  return cleanEvents(
+    text
+      .split(/[。\n]/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map((sentence) => {
+        let s = sentence;
+        let date = baseDate;
+        const days: [RegExp, number][] = [[/(明後日|あさって)の?/, 2], [/(明日|あした)の?/, 1], [/(今日|きょう)の?/, 0]];
+        for (const [re, n] of days) {
+          const m = s.match(re);
+          if (m) { date = addDays(today, n); s = s.replace(m[0], ""); break; }
+        }
+        const hm = (h: string, half?: string) => `${h.padStart(2, "0")}:${half ? "30" : "00"}`;
+        let start: string | null = null;
+        let end: string | null = null;
+        const t = s.match(/(\d{1,2})時(半)?(?:から|〜|~)?(?:(\d{1,2})時(半)?(?:まで)?)?に?/);
+        if (t) {
+          start = hm(t[1], t[2]);
+          if (t[3]) end = hm(t[3], t[4]);
+          s = s.replace(t[0], "");
+        }
+        return { title: s.replace(/^[\s、，の]+|[\s、，]+$/g, "").trim() || sentence, date, end_date: date, start, end, location: "" };
+      }),
+    baseDate,
+  );
+}

@@ -261,3 +261,27 @@ export const writeErrorText = (code: string) =>
   : code === "not_found" ? "その予定はもうありません"
   : code === "offline" ? "オフラインのため保存できませんでした"
   : "保存できませんでした";
+
+/* ---------- 話した内容から予定を作る（AI） ---------- */
+
+export type PlannedEvent = { title: string; date: string; end_date: string; start: string | null; end: string | null; all_day: boolean; location: string };
+
+export async function planEventsWithAi(text: string, baseDate: string): Promise<PlannedEvent[]> {
+  const r = await api<{ events: PlannedEvent[] }>("/api/ai/events", { method: "POST", body: { text, today: today(), date: baseDate } });
+  return r.events;
+}
+
+/** 予定の名前から、いつもの色を推測する（りんごじゅうすの使い分け）。当てはまらなければ ""（カレンダーの色） */
+const COLOR_RULES: [RegExp, string][] = [
+  [/給料|給与/, "5"],
+  [/ジム|筋トレ/, ""],
+  [/【就活】|面接|面談|選考|説明会|インターン|ES提出|エントリー|内定/, "10"],
+  [/就活|AIHP|AI×HP|事業|レポート|勉強|課題|資格|自習/, "8"],
+  [/バイト|シフト|ニトリ|いけだ|Uber|ウーバー|ロケットナウ|配達/, "7"],
+  [/授業|講義|ゼミ|研究室|限|大学|発表|試験|テスト/, "3"],
+  [/遊び|飲み|ご飯|旅行|ライブ|映画|デート|カラオケ|当選|抽選/, "11"],
+];
+export function suggestColor(title: string): string {
+  for (const [re, id] of COLOR_RULES) if (re.test(title)) return id;
+  return "";
+}

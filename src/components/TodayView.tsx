@@ -5,21 +5,23 @@ import {
 } from "../calendar";
 import { type MailItem, SLOTS, SLOT_LABEL } from "../mail";
 import { haptic } from "../haptics";
-import { Calendar, ChevronLeft, ChevronRight, MailIcon, Plus } from "./Icons";
+import { Calendar, ChevronLeft, ChevronRight, MailIcon } from "./Icons";
 import type { EventDraft } from "./EventSheet";
 
 const HOUR = 56; // 1時間の高さ(px)
 const EMPTY: CalEvent[] = [];
 
 type Props = {
+  /** 見ている日（App が持つ。右下の ＋ とマイクで、この日の予定を入れる） */
+  date: string;
+  setDate: (d: string) => void;
   unread: MailItem[];
   onOpenMail: () => void;
   onEdit: (d: EventDraft) => void;
 };
 
 /** 今日：新着メールのお知らせ + Google カレンダーの1日（縦の時間割） */
-export function TodayView({ unread, onOpenMail, onEdit }: Props) {
-  const [date, setDate] = useState(today);
+export function TodayView({ date, setDate, unread, onOpenMail, onEdit }: Props) {
   const [dir, setDir] = useState(0);
   const source = useCal((s) => s.source);
   const calendars = useCal((s) => s.calendars);
@@ -147,22 +149,6 @@ export function TodayView({ unread, onOpenMail, onEdit }: Props) {
           <motion.button className="day-today" whileTap={{ scale: 0.92 }} onClick={() => go(0)} data-testid="day-today" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>今日</motion.button>
         )}
         <motion.button className="day-arrow" whileTap={{ scale: 0.86 }} onClick={() => go(1)} aria-label="次の日" data-testid="day-next"><ChevronRight size={18} /></motion.button>
-        {source?.status === "ok" && (
-          <motion.button
-            className="day-add"
-            whileTap={{ scale: 0.9 }}
-            aria-label="予定を追加"
-            data-testid="event-add"
-            onClick={() => {
-              haptic("light");
-              const start = isToday ? Math.min(23 * 60, Math.ceil((nowMin + 1) / 30) * 30) : 9 * 60;
-              onEdit({ mode: "new", date, startMin: start });
-            }}
-          >
-            <Plus size={15} />
-            <span>予定</span>
-          </motion.button>
-        )}
       </div>
 
       {source === null && (

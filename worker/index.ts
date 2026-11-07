@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arctic";
-import { enrichMemo, planTasks, transcribe } from "./ai";
+import { enrichMemo, planEvents, planTasks, transcribe } from "./ai";
 import {
   GMAIL_SCOPE, MS_SCOPE, SLOTS, type Slot,
   bodyOf, encryptToken, mockArrive, mockReadInGmail, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, providerFor, refreshUser, rowToItem, runScheduled, searchSlot,
@@ -360,6 +360,21 @@ app.post("/ai/plan", async (c) => {
     return c.json(await planTasks(c.env, text, today));
   } catch (e) {
     console.warn("plan failed", e);
+    return c.json({ error: "ai_failed" }, 502);
+  }
+});
+
+/** 話した内容 → 予定の案（追加はしない。画面で確かめてから Google カレンダーへ） */
+app.post("/ai/events", async (c) => {
+  const b = await c.req.json<{ text?: string; today?: string; date?: string }>().catch(() => ({}) as any);
+  const text = String(b.text ?? "").trim().slice(0, 3000);
+  const today = DATE.test(String(b.today)) ? String(b.today) : new Date().toISOString().slice(0, 10);
+  const base = DATE.test(String(b.date)) ? String(b.date) : today;
+  if (!text) return c.json({ error: "text_required" }, 400);
+  try {
+    return c.json(await planEvents(c.env, text, today, base));
+  } catch (e) {
+    console.warn("plan events failed", e);
     return c.json({ error: "ai_failed" }, 502);
   }
 });

@@ -16,7 +16,7 @@ import { MailView } from "./components/MailView";
 import { TodayView } from "./components/TodayView";
 import { EventSheet, type EventDraft } from "./components/EventSheet";
 import { SLOTS, SLOT_LABEL, autoCheck, loadMail, useMail } from "./mail";
-import { clearCalCache, loadDay, today } from "./calendar";
+import { clearCalCache, loadDay, today, useCal } from "./calendar";
 import { primeKeyboard } from "./focus";
 import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
@@ -43,6 +43,9 @@ export function App() {
   });
   const [pageDir, setPageDir] = useState(0);
   const [eventDraft, setEventDraft] = useState<EventDraft | null>(null);
+  // 「今日」のページで見ている日（右下の ＋ とマイクは、この日の予定を入れる）
+  const [calDate, setCalDate] = useState(today);
+  const calOk = useCal((c) => c.source?.status === "ok");
   const [booted, setBooted] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -113,6 +116,23 @@ export function App() {
     },
     [setTab, goPage],
   );
+  /** 「今日」の ＋：見ている日の予定を追加（今日なら次の30分区切りから、ほかの日は9:00から） */
+  const openEventAdd = useCallback(() => {
+    haptic("light");
+    if (!calOk) { showToast("先に「カレンダーをつなぐ」を押してください"); return; }
+    const now = new Date();
+    const start = calDate === today() ? Math.min(23 * 60, Math.ceil((now.getHours() * 60 + now.getMinutes() + 1) / 30) * 30) : 9 * 60;
+    setEventDraft({ mode: "new", date: calDate, startMin: start });
+  }, [calOk, calDate, showToast]);
+  const onAiEventsAdded = useCallback(
+    (n: number) => {
+      setAsking(false);
+      void loadDay(calDate);
+      showToast(`${n}件の予定を入れました`);
+    },
+    [calDate, showToast],
+  );
+
   const onAiAdded = useCallback(
     (n: number) => {
       setAsking(false);
@@ -401,7 +421,7 @@ export function App() {
               transition={{ type: "spring", stiffness: 380, damping: 36 }}
             >
               {page === "today" && (
-                <TodayView unread={unread} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
+                <TodayView date={calDate} setDate={setCalDate} unread={unread} onOpenMail={() => goPage("mail")} onEdit={setEventDraft} />
               )}
               {page === "mail" && <MailView active toast={showToast} />}
               {page === "tasks" && (
@@ -423,27 +443,31 @@ export function App() {
         <div className="fabs">
           <motion.button
             className="fab-ai glass"
-            aria-label="AIに頼む"
+            aria-label={page === "today" ? "話して予定を入れる" : "AIに頼む"}
             data-testid="ai-open"
             disabled={!online}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: online ? 1 : 0.45 }}
             whileTap={{ scale: 0.88 }}
             transition={{ type: "spring", stiffness: 520, damping: 26, delay: 0.12 }}
-            onClick={() => { haptic("light"); setAsking(true); }}
+            onClick={() => {
+              haptic("light");
+              if (page === "today" && !calOk) { showToast("先に「カレンダーをつなぐ」を押してください"); return; }
+              setAsking(true);
+            }}
           >
             <Mic size={21} />
             <Sparkle size={11} className="fab-ai-spark" />
           </motion.button>
           <motion.button
             className="fab"
-            aria-label="タスクを追加"
+            aria-label={page === "today" ? "予定を追加" : "タスクを追加"}
             data-testid="add"
             initial={{ scale: 0, rotate: -90, opacity: 0 }}
             animate={{ scale: 1, rotate: 0, opacity: 1 }}
             whileTap={{ scale: 0.88 }}
             transition={{ type: "spring", stiffness: 520, damping: 24, delay: 0.06 }}
-            onClick={openAdd}
+            onClick={page === "today" ? openEventAdd : openAdd}
           >
             <Plus size={26} />
           </motion.button>
@@ -452,7 +476,13 @@ export function App() {
 
       <TaskSheet taskId={openId} onClose={() => setOpenId(null)} onDelete={handleDelete} onComplete={onComplete} />
       <NewTaskSheet open={adding} defaultStatus={tab} onClose={closeAdd} onAdded={onAdded} />
-      <AiSheet open={asking} onClose={closeAsk} onAdded={onAiAdded} />
+      <AiSheet
+        open={asking}
+        mode={page === "today" ? "events" : "tasks"}
+        baseDate={calDate}
+        onClose={closeAsk}
+        onAdded={page === "today" ? onAiEventsAdded : onAiAdded}
+      />
       <EventSheet draft={eventDraft} onClose={closeEvent} toast={showToast} />
 
       <AnimatePresence>

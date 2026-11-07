@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useDragControls } from "motion/react";
 import {
   type CalEvent, type ColorChoice, CalWriteError, MAIN_COLORS, OTHER_COLORS, atMinutes, colorChoice, createEvent, dateLabel, deleteEvent, evColor,
-  shiftDate, updateEvent, useCal, writeErrorText,
+  shiftDate, suggestColor, updateEvent, useCal, writeErrorText,
 } from "../calendar";
 import { haptic } from "../haptics";
 import { Trash } from "./Icons";
@@ -44,6 +44,8 @@ export function EventSheet({ draft, onClose, toast }: Props) {
   const [confirmDel, setConfirmDel] = useState(false);
   const [error, setError] = useState("");
   const [moreColors, setMoreColors] = useState(false);
+  // 新しい予定は、色を自分で選ぶまで名前から色を推測する（「バイト」→ バイトの色）
+  const [colorPicked, setColorPicked] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -53,6 +55,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
     setConfirmDel(false);
     setError("");
     setMoreColors(draft.mode === "edit" && OTHER_COLORS.some((c) => c.id === draft.ev.colorId));
+    setColorPicked(draft.mode === "edit");
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     document.documentElement.classList.add("sheet-open");
@@ -149,7 +152,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
                 data-testid="event-title"
                 enterKeyHint="done"
                 readOnly={readOnly}
-                onChange={(e) => up({ title: e.target.value })}
+                onChange={(e) => up(colorPicked ? { title: e.target.value } : { title: e.target.value, colorId: suggestColor(e.target.value) })}
               />
 
               <div className="event-fields">
@@ -163,7 +166,13 @@ export function EventSheet({ draft, onClose, toast }: Props) {
                     <label className="event-pill">
                       {dateLabel(form.date)}
                       <input type="date" aria-label="開始日" data-testid="event-date" value={form.date} disabled={readOnly}
-                        onChange={(e) => e.target.value && up({ date: e.target.value, endDate: e.target.value > form.endDate ? e.target.value : form.endDate })} />
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (!v) return;
+                          // 開始日を動かしたら、何日間の予定かを保ったまま終了日も動かす
+                          const span = Math.round((Date.parse(form.endDate) - Date.parse(form.date)) / 86_400_000);
+                          up({ date: v, endDate: shiftDate(v, Math.max(0, span)) });
+                        }} />
                     </label>
                     {!form.allDay && (
                       <label className="event-pill time">
@@ -185,13 +194,11 @@ export function EventSheet({ draft, onClose, toast }: Props) {
                 <div className="event-row">
                   <span>終了</span>
                   <div className="event-when">
-                    {(form.allDay || form.endDate !== form.date) && (
-                      <label className="event-pill">
-                        {dateLabel(form.endDate)}
-                        <input type="date" aria-label="終了日" data-testid="event-end-date" value={form.endDate} min={form.date} disabled={readOnly}
-                          onChange={(e) => e.target.value && up({ endDate: e.target.value })} />
-                      </label>
-                    )}
+                    <label className="event-pill">
+                      {dateLabel(form.endDate)}
+                      <input type="date" aria-label="終了日" data-testid="event-end-date" value={form.endDate} min={form.date} disabled={readOnly}
+                        onChange={(e) => e.target.value && up({ endDate: e.target.value })} />
+                    </label>
                     {!form.allDay && (
                       <label className="event-pill time">
                         {form.endTime}
@@ -217,7 +224,7 @@ export function EventSheet({ draft, onClose, toast }: Props) {
 
               <div className="event-colors" role="radiogroup" aria-label="色" data-testid="event-colors">
                 {(moreColors ? [...MAIN_COLORS, ...OTHER_COLORS] : MAIN_COLORS).map((c) => (
-                  <ColorChip key={c.id || "default"} c={c} on={form.colorId === c.id} disabled={readOnly} onPick={() => { haptic(); up({ colorId: c.id }); }} />
+                  <ColorChip key={c.id || "default"} c={c} on={form.colorId === c.id} disabled={readOnly} onPick={() => { haptic(); setColorPicked(true); up({ colorId: c.id }); }} />
                 ))}
                 {!moreColors && !readOnly && (
                   <button type="button" className="color-more" onClick={() => setMoreColors(true)} data-testid="event-colors-more">ほかの色</button>
