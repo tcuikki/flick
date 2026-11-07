@@ -2,7 +2,10 @@ import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arctic";
 import { enrichMemo, planTasks, transcribe } from "./ai";
-import { GMAIL_SCOPE, encryptToken, gmailAddress, rowToDigest, runCheck, runScheduled } from "./mail";
+import {
+  GMAIL_SCOPE, MS_SCOPE, SLOTS, SLOT_PROVIDER, type Slot,
+  encryptToken, gmailAddress, msAddress, msAuthorizeUrl, msTokenFromCode, refreshUser, rowToItem, runScheduled,
+} from "./mail";
 
 export type Env = {
   DB: D1Database;
@@ -12,6 +15,11 @@ export type Env = {
   GOOGLE_CLIENT_SECRET: string;
   /** E2E テスト専用。本番では絶対に設定しない（README 参照） */
   E2E?: string;
+  /** 大学（Outlook）を読むための Microsoft のアプリ登録（README 参照）。未設定なら「大学」はつなげない */
+  MS_CLIENT_ID?: string;
+  MS_CLIENT_SECRET?: string;
+  /** 大学のテナント（例: tcu.ac.jp） */
+  MS_TENANT?: string;
 };
 
 type User = { id: string; email: string; name: string; picture: string };
@@ -109,8 +117,21 @@ async function sessionUserId(c: any): Promise<string | null> {
   return row && row.expires_at > Date.now() ? String(row.user_id) : null;
 }
 
+async function saveSource(c: any, userId: string, slot: Slot, email: string, refresh: string) {
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO mail_sources (user_id, slot, provider, email, token_enc, status, connected_at) VALUES (?, ?, ?, ?, ?, 'ok', ?)
+       ON CONFLICT(user_id, slot) DO UPDATE SET provider = excluded.provider, email = excluded.email, token_enc = excluded.token_enc, status = 'ok', connected_at = excluded.connected_at`,
+    ).bind(userId, slot, SLOT_PROVIDER[slot], email, await encryptToken(c.env, refresh), Date.now()),
+    // 別のアカウントにつなぎ直したときに前のメールが混ざらないように
+    c.env.DB.prepare("DELETE FROM mail_items WHERE user_id = ? AND slot = ?").bind(userId, slot),
+  ]);
+  // つないだらすぐ読み込む（失敗しても次の 10:00 / 20:00 に読む）
+  c.executionCtx.waitUntil(refreshUser(c.env, userId).catch((e: unknown) => console.warn("first refresh failed", e)));
+}
+
 /** Gmail（読むだけ）の許可を受け取り、リフレッシュトークンを暗号化して保存する */
-async function connectMail(c: any, code: string, verifier: string) {
+async function connectGmail(c: any, slot: Slot, code: string, verifier: string) {
   const userId = await sessionUserId(c);
   if (!userId) return c.redirect("/?mail=failed", 302);
   try {
@@ -118,15 +139,10 @@ async function connectMail(c: any, code: string, verifier: string) {
     const scopes: string[] = tokens.hasScopes() ? tokens.scopes() : [];
     if (!scopes.includes(GMAIL_SCOPE) || !tokens.hasRefreshToken()) return c.redirect("/?mail=denied", 302);
     const email = await gmailAddress(c.env, tokens.accessToken());
-    await c.env.DB.prepare(
-      `INSERT INTO mail_accounts (user_id, email, token_enc, status, connected_at) VALUES (?, ?, ?, 'ok', ?)
-       ON CONFLICT(user_id) DO UPDATE SET email = excluded.email, token_enc = excluded.token_enc, status = 'ok', connected_at = excluded.connected_at`,
-    )
-      .bind(userId, email, await encryptToken(c.env, tokens.refreshToken()), Date.now())
-      .run();
-    return c.redirect("/?mail=connected", 302);
+    await saveSource(c, userId, slot, email, tokens.refreshToken());
+    return c.redirect(`/?mail=connected&slot=${slot}`, 302);
   } catch (e) {
-    console.warn("mail connect failed", e);
+    console.warn("gmail connect failed", e);
     return c.redirect("/?mail=failed", 302);
   }
 }
@@ -141,9 +157,9 @@ app.get("/auth/google/callback", async (c) => {
   const purpose = getCookie(c, "flick_oauth_purpose");
   deleteCookie(c, "flick_oauth_purpose", { path: "/" });
   if (!code || !state || !savedState || !verifier || state !== savedState) {
-    return c.redirect(purpose === "mail" ? "/?mail=failed" : "/?login=failed", 302);
+    return c.redirect(purpose?.startsWith("mail-") ? "/?mail=failed" : "/?login=failed", 302);
   }
-  if (purpose === "mail") return connectMail(c, code, verifier);
+  if (purpose === "mail-personal" || purpose === "mail-business") return connectGmail(c, purpose.slice(5) as Slot, code, verifier);
   try {
     const tokens = await google(c).validateAuthorizationCode(code, verifier);
     // ID トークンは Google のトークンエンドポイントから TLS で直接受け取っているので署名検証は不要（OIDC Core 3.1.3.7）
@@ -182,6 +198,34 @@ app.post("/auth/logout", async (c) => {
   if (token) await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(await sha256(token)).run();
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
   return c.json({ ok: true });
+});
+
+/* ---------- 大学（Outlook）：Microsoft の OAuth 2.0（Authorization Code + PKCE） ---------- */
+
+const msRedirect = (c: any) => `${new URL(c.req.url).origin}/api/auth/microsoft/callback`;
+
+app.get("/auth/microsoft/callback", async (c) => {
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const savedState = getCookie(c, "flick_ms_state");
+  const verifier = getCookie(c, "flick_ms_verifier");
+  deleteCookie(c, "flick_ms_state", { path: "/" });
+  deleteCookie(c, "flick_ms_verifier", { path: "/" });
+  const err = `${c.req.query("error") ?? ""} ${c.req.query("error_description") ?? ""}`;
+  // 大学の設定で「管理者の承認が必要」なとき（AADSTS65001 / 90094 / 90095 など）
+  if (/AADSTS(65001|90094|90095|900941)|admin|consent_required/i.test(err)) return c.redirect("/?mail=ms-admin", 302);
+  if (!code || !state || !savedState || !verifier || state !== savedState) return c.redirect("/?mail=failed", 302);
+  const userId = await sessionUserId(c);
+  if (!userId) return c.redirect("/?mail=failed", 302);
+  try {
+    const t = await msTokenFromCode(c.env, code, verifier, msRedirect(c));
+    const email = await msAddress(c.env, t.access);
+    await saveSource(c, userId, "univ", email, t.refresh);
+    return c.redirect("/?mail=connected&slot=univ", 302);
+  } catch (e) {
+    console.warn("outlook connect failed", e);
+    return c.redirect("/?mail=failed", 302);
+  }
 });
 
 /* ---------- ここから先はログイン必須 ---------- */
@@ -314,72 +358,94 @@ app.post("/ai/transcribe", async (c) => {
   }
 });
 
-/* ---------- メール（Gmail・読むだけ） ---------- */
+/* ---------- メール（個人・事業 = Gmail、大学 = Outlook。どれも読むだけ） ---------- */
 
-app.get("/mail/connect", (c) => {
+const isSlot = (v: unknown): v is Slot => SLOTS.includes(v as Slot);
+const cookieOpts = (c: any) => ({ httpOnly: true, secure: isHttps(c.req.url), sameSite: "Lax" as const, path: "/", maxAge: 600 });
+
+app.get("/mail/connect/:slot", async (c) => {
+  const slot = c.req.param("slot");
+  if (!isSlot(slot)) return c.json({ error: "invalid_slot" }, 400);
   const state = generateState();
   const verifier = generateCodeVerifier();
+  if (SLOT_PROVIDER[slot] === "microsoft") {
+    if (!c.env.MS_CLIENT_ID || !c.env.MS_CLIENT_SECRET) return c.redirect("/?mail=ms-notready", 302);
+    const challenge = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)))))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const url = new URL(msAuthorizeUrl(c.env));
+    url.search = new URLSearchParams({
+      client_id: c.env.MS_CLIENT_ID, response_type: "code", redirect_uri: msRedirect(c), response_mode: "query",
+      scope: MS_SCOPE, state, code_challenge: challenge, code_challenge_method: "S256", prompt: "select_account",
+    }).toString();
+    setCookie(c, "flick_ms_state", state, cookieOpts(c));
+    setCookie(c, "flick_ms_verifier", verifier, cookieOpts(c));
+    return c.redirect(url.toString(), 302);
+  }
   const url = google(c).createAuthorizationURL(state, verifier, ["openid", "email", "profile", GMAIL_SCOPE]);
-  url.searchParams.set("access_type", "offline"); // 10:00 / 18:00 にサーバーから読むために必要
-  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("access_type", "offline"); // 10:00 / 20:00 にサーバーから読むために必要
+  url.searchParams.set("prompt", "consent select_account"); // 事業用など別のアカウントも選べるように
   url.searchParams.set("include_granted_scopes", "true");
-  url.searchParams.set("login_hint", c.get("user").email);
-  const opts = { httpOnly: true, secure: isHttps(c.req.url), sameSite: "Lax" as const, path: "/", maxAge: 600 };
-  setCookie(c, "flick_oauth_state", state, opts);
-  setCookie(c, "flick_oauth_verifier", verifier, opts);
-  setCookie(c, "flick_oauth_purpose", "mail", opts);
+  setCookie(c, "flick_oauth_state", state, cookieOpts(c));
+  setCookie(c, "flick_oauth_verifier", verifier, cookieOpts(c));
+  setCookie(c, "flick_oauth_purpose", `mail-${slot}`, cookieOpts(c));
   return c.redirect(url.toString(), 302);
 });
 
 app.get("/mail", async (c) => {
   const uid = c.get("user").id;
-  const account = await c.env.DB.prepare("SELECT email, status, connected_at, last_checked_at FROM mail_accounts WHERE user_id = ?").bind(uid).first();
-  const { results } = await c.env.DB.prepare("SELECT * FROM mail_digests WHERE user_id = ? ORDER BY created_at DESC LIMIT 14").bind(uid).all();
-  return c.json({ account: account ?? null, digests: results.map(rowToDigest) });
+  const { results: sources } = await c.env.DB.prepare("SELECT slot, provider, email, status, connected_at, checked_at FROM mail_sources WHERE user_id = ?").bind(uid).all();
+  const { results: items } = await c.env.DB.prepare(
+    "SELECT slot, id, from_name, from_addr, subject, date, snippet, summary, task_title, task_due, link, read FROM mail_items WHERE user_id = ? ORDER BY date DESC",
+  ).bind(uid).all();
+  return c.json({ sources, items: items.map(rowToItem), outlookReady: Boolean(c.env.MS_CLIENT_ID && c.env.MS_CLIENT_SECRET) || c.env.E2E === "1" });
 });
 
 app.post("/mail/check", async (c) => {
   const uid = c.get("user").id;
-  const recent = await c.env.DB.prepare("SELECT created_at FROM mail_digests WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").bind(uid).first<{ created_at: number }>();
-  if (recent && Date.now() - recent.created_at < 60_000) return c.json({ error: "too_soon" }, 429);
-  const r = await runCheck(c.env, uid);
-  if (r.status === "none") return c.json({ error: "not_connected" }, 400);
-  if (r.status === "expired") return c.json({ error: "expired" }, 409);
-  return c.json({ digest: r.digest });
+  const last = await c.env.DB.prepare("SELECT MAX(checked_at) AS t, COUNT(*) AS n FROM mail_sources WHERE user_id = ?").bind(uid).first<{ t: number | null; n: number }>();
+  if (!last?.n) return c.json({ error: "not_connected" }, 400);
+  if (last.t && Date.now() - last.t < 60_000) return c.json({ error: "too_soon" }, 429);
+  return c.json({ result: await refreshUser(c.env, uid) });
 });
 
-app.post("/mail/digests/:id/seen", async (c) => {
-  await c.env.DB.prepare("UPDATE mail_digests SET seen_at = COALESCE(seen_at, ?) WHERE id = ? AND user_id = ?")
-    .bind(Date.now(), c.req.param("id"), c.get("user").id)
+app.post("/mail/items/:slot/:id/read", async (c) => {
+  const b = await c.req.json<{ read?: boolean }>().catch(() => ({}) as any);
+  await c.env.DB.prepare("UPDATE mail_items SET read = ? WHERE user_id = ? AND slot = ? AND id = ?")
+    .bind(b.read === false ? 0 : 1, c.get("user").id, c.req.param("slot"), c.req.param("id"))
     .run();
   return c.json({ ok: true });
 });
 
-app.delete("/mail", async (c) => {
+app.delete("/mail/:slot", async (c) => {
   const uid = c.get("user").id;
+  const slot = c.req.param("slot");
   await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM mail_accounts WHERE user_id = ?").bind(uid),
-    c.env.DB.prepare("DELETE FROM mail_digests WHERE user_id = ?").bind(uid),
+    c.env.DB.prepare("DELETE FROM mail_sources WHERE user_id = ? AND slot = ?").bind(uid, slot),
+    c.env.DB.prepare("DELETE FROM mail_items WHERE user_id = ? AND slot = ?").bind(uid, slot),
   ]);
   return c.json({ ok: true });
 });
 
-/** E2E テスト専用：Gmail につないだことにする（E2E フラグ + localhost のときだけ） */
+const devOnly = (c: any) => c.env.E2E === "1" && ["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname);
+
+/** E2E テスト専用：メールにつないだことにする（E2E フラグ + localhost のときだけ） */
 app.post("/mail/dev-connect", async (c) => {
-  if (c.env.E2E !== "1" || !["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname)) return c.notFound();
-  const b = await c.req.json<{ token?: string }>().catch(() => ({}) as any);
+  if (!devOnly(c)) return c.notFound();
+  const b = await c.req.json<{ slot?: string; token?: string; email?: string }>().catch(() => ({}) as any);
+  const slot: Slot = isSlot(b.slot) ? b.slot : "personal";
+  const email = String(b.email || (slot === "univ" ? "g0000000@tcu.ac.jp" : slot === "business" ? "aihp@example.com" : "tester@gmail.com"));
   await c.env.DB.prepare(
-    `INSERT INTO mail_accounts (user_id, email, token_enc, status, connected_at) VALUES (?, 'tester@gmail.com', ?, 'ok', ?)
-     ON CONFLICT(user_id) DO UPDATE SET token_enc = excluded.token_enc, status = 'ok'`,
+    `INSERT INTO mail_sources (user_id, slot, provider, email, token_enc, status, connected_at) VALUES (?, ?, ?, ?, ?, 'ok', ?)
+     ON CONFLICT(user_id, slot) DO UPDATE SET token_enc = excluded.token_enc, email = excluded.email, status = 'ok'`,
   )
-    .bind(c.get("user").id, await encryptToken(c.env, String(b.token || "e2e-refresh")), Date.now())
+    .bind(c.get("user").id, slot, SLOT_PROVIDER[slot], email, await encryptToken(c.env, String(b.token || "e2e-refresh")), Date.now())
     .run();
   return c.json({ ok: true });
 });
 
-/** E2E テスト専用：10:00 / 18:00 の自動チェックと同じ処理を今すぐ動かす */
+/** E2E テスト専用：10:00 / 20:00 の自動更新と同じ処理を今すぐ動かす */
 app.post("/mail/dev-cron", async (c) => {
-  if (c.env.E2E !== "1" || !["localhost", "127.0.0.1"].includes(new URL(c.req.url).hostname)) return c.notFound();
+  if (!devOnly(c)) return c.notFound();
   await runScheduled(c.env);
   return c.json({ ok: true });
 });
@@ -392,7 +458,7 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  /** 10:00 と 18:00（日本時間）にメールをチェック（wrangler.jsonc の triggers.crons） */
+  /** 10:00 と 20:00（日本時間）にメールを読み込む（wrangler.jsonc の triggers.crons） */
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(runScheduled(env));
   },

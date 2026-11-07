@@ -18,10 +18,12 @@
     }
   ],
   "ai": { "binding": "AI" },
-  // メールのチェック：毎日 10:00 と 18:00（日本時間）= 01:00 と 09:00（UTC）
-  "triggers": { "crons": ["0 1 * * *", "0 9 * * *"] },
+  // メールの更新：毎日 10:00 と 20:00（日本時間）= 01:00 と 11:00（UTC）
+  "triggers": { "crons": ["0 1 * * *", "0 11 * * *"] },
   "vars": {
-    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    // 大学（Outlook）のテナント。アプリ登録を大学のアカウントで「この組織のみ」にした場合は大学のドメイン
+    "MS_TENANT": "tcu.ac.jp"
   },
   // E2E テスト専用環境（CLOUDFLARE_ENV=e2e）。Cloudflare に接続せずローカルだけで動く。
   // AI はモック、ログインはテスト用エンドポイント。本番デプロイには使わない。

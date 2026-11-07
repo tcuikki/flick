@@ -11,8 +11,8 @@ import { TaskSheet } from "./components/TaskSheet";
 import { Tabs } from "./components/Tabs";
 import { NewTaskSheet } from "./components/NewTaskSheet";
 import { AiSheet } from "./components/AiSheet";
-import { MailView, countBy, sourceSummary } from "./components/MailView";
-import { digestLabel, loadMail, useMail } from "./mail";
+import { MailView } from "./components/MailView";
+import { SLOTS, SLOT_LABEL, dayTimeLabel, loadMail, newUnread, useMail } from "./mail";
 import { primeKeyboard } from "./focus";
 import { ChevronRight, Google, MailIcon, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
@@ -37,9 +37,13 @@ export function App() {
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState(false);
   const [mailOpen, setMailOpen] = useState(false);
-  const mailAccount = useMail((m) => m.account);
-  const latest = useMail((m) => m.digests[0] ?? null);
-  const unseen = useMail((m) => m.digests.filter((d) => !d.seen_at && d.items.length > 0).length);
+  const mailExpired = useMail((m) => m.sources.some((s) => s.status === "expired"));
+  // 選び出した配列を毎回作ると再描画が止まらなくなるので、元のデータだけ購読して useMemo で計算する
+  const mailItems = useMail((m) => m.items);
+  const openedAt = useMail((m) => m.openedAt);
+  const fresh = useMemo(() => newUnread({ items: mailItems, openedAt }), [mailItems, openedAt]);
+  const freshKey = fresh.map((m) => m.id).join(",");
+  const lastUpdate = useMail((m) => Math.max(0, ...m.sources.map((s) => s.checked_at ?? 0)));
   const closeMail = useCallback(() => setMailOpen(false), []);
 
   const setTab = useCallback((s: Status) => {
@@ -125,8 +129,14 @@ export function App() {
     }
     const mail = params.get("mail");
     if (mail) {
-      showToast(mail === "connected" ? "Gmailをつなぎました" : mail === "denied" ? "メールを読む許可がありませんでした" : "Gmailにつなげませんでした");
-      if (mail === "connected") setMailOpen(true);
+      const msg: Record<string, string> = {
+        connected: "つなぎました。数秒で読み込みます",
+        denied: "メールを読む許可がありませんでした（チェックを入れて許可してください）",
+        "ms-admin": "大学の設定で、管理者の承認が必要でした",
+        "ms-notready": "大学のOutlookは、Microsoft側の準備がまだです",
+      };
+      showToast(msg[mail] ?? "つなげませんでした");
+      if (mail === "connected") { setMailOpen(true); setTimeout(() => void loadMail(), 4000); }
       history.replaceState(null, "", "/");
     }
     return () => window.removeEventListener("keydown", onKey);
@@ -229,8 +239,8 @@ export function App() {
             <motion.button className="mail-btn glass" whileTap={{ scale: 0.9 }} onClick={() => { haptic("light"); setMailOpen(true); }} aria-label="メール" data-testid="mail-open">
               <MailIcon size={20} />
               <AnimatePresence>
-                {(unseen > 0 || mailAccount?.status === "expired") && (
-                  <motion.i className={`mail-badge ${mailAccount?.status === "expired" ? "warn" : ""}`} data-testid="mail-badge" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 20 }} />
+                {(fresh.length > 0 || mailExpired) && (
+                  <motion.i className={`mail-badge ${mailExpired && !fresh.length ? "warn" : ""}`} data-testid="mail-badge" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 20 }} />
                 )}
               </AnimatePresence>
             </motion.button>
@@ -289,9 +299,9 @@ export function App() {
         )}
 
         <AnimatePresence>
-          {booted && auth === "in" && latest && !latest.seen_at && latest.items.length > 0 && (
+          {booted && auth === "in" && !mailOpen && fresh.length > 0 && (
             <motion.button
-              key={latest.id}
+              key={freshKey}
               className="mail-banner glass"
               data-testid="mail-banner"
               initial={{ opacity: 0, y: -24, scale: 0.94 }}
@@ -303,10 +313,10 @@ export function App() {
             >
               <span className="mail-banner-icon"><MailIcon size={20} /></span>
               <span className="mail-banner-text">
-                <strong>{digestLabel(latest.created_at)} のメール {latest.items.length}件</strong>
+                <strong>新しいメール {fresh.length}件</strong>
                 <span>
-                  {sourceSummary(latest)}
-                  {countBy(latest).action > 0 && <em>要対応 {countBy(latest).action}</em>}
+                  {SLOTS.filter((s) => fresh.some((m) => m.slot === s)).map((s) => `${SLOT_LABEL[s]} ${fresh.filter((m) => m.slot === s).length}`).join("・")}
+                  {lastUpdate > 0 && <i>{dayTimeLabel(lastUpdate)} 更新</i>}
                 </span>
               </span>
               <ChevronRight size={18} className="mail-banner-chev" />

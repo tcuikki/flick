@@ -1,19 +1,21 @@
 import { useSyncExternalStore } from "react";
 import { api, ApiError } from "./api";
 
-export type MailKind = "action" | "check" | "info" | "ad";
-export type MailSource = "gmail" | "univ" | "icloud";
-export const SOURCE_LABEL: Record<MailSource, string> = { gmail: "Gmail", univ: "大学", icloud: "iCloud" };
-export type MailItem = {
-  id: string; threadId: string; source: MailSource; from: string; fromName: string;
-  subject: string; date: number; summary: string; snippet?: string; kind: MailKind; unread: boolean;
-};
-export type MailTask = { title: string; due_date: string | null; status: "todo"; note: string; mailId: string };
-export type Digest = { id: string; created_at: number; since: number; total: number; items: MailItem[]; tasks: MailTask[]; seen_at: number | null };
-export type MailAccount = { email: string; status: "ok" | "expired"; connected_at: number; last_checked_at: number | null };
+export type Slot = "personal" | "business" | "univ";
+export const SLOTS: Slot[] = ["personal", "business", "univ"];
+export const SLOT_LABEL: Record<Slot, string> = { personal: "個人", business: "事業", univ: "大学" };
 
-type State = { loaded: boolean; account: MailAccount | null; digests: Digest[]; checking: boolean };
-let state: State = { loaded: false, account: null, digests: [], checking: false };
+export type MailItem = {
+  slot: Slot; id: string; from_name: string; from_addr: string; subject: string; date: number;
+  snippet: string; summary: string; task_title: string | null; task_due: string | null; link: string; read: boolean;
+};
+export type MailSource = { slot: Slot; provider: "google" | "microsoft"; email: string; status: "ok" | "expired"; connected_at: number; checked_at: number | null };
+
+type State = { loaded: boolean; sources: MailSource[]; items: MailItem[]; outlookReady: boolean; checking: boolean; openedAt: number };
+const OPENED = "flick:mail-opened";
+const loadOpened = () => { try { return Number(localStorage.getItem(OPENED)) || 0; } catch { return 0; } };
+
+let state: State = { loaded: false, sources: [], items: [], outlookReady: false, checking: false, openedAt: loadOpened() };
 const listeners = new Set<() => void>();
 const set = (p: Partial<State>) => { state = { ...state, ...p }; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
@@ -21,76 +23,89 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.
 export function useMail<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state), () => sel(state));
 }
+export const mailState = () => state;
 
 export async function loadMail() {
   try {
-    const r = await api<{ account: MailAccount | null; digests: Digest[] }>("/api/mail");
-    set({ loaded: true, account: r.account, digests: r.digests });
+    const r = await api<{ sources: MailSource[]; items: MailItem[]; outlookReady: boolean }>("/api/mail");
+    set({ loaded: true, sources: r.sources, items: r.items, outlookReady: r.outlookReady });
   } catch {
     set({ loaded: true });
   }
 }
 
-/** 今すぐチェック。結果のメッセージを返す */
-export async function checkMailNow(): Promise<string> {
+/** 今すぐ更新。結果のメッセージを返す */
+export async function refreshMailNow(): Promise<string> {
   set({ checking: true });
   try {
-    const r = await api<{ digest: Digest }>("/api/mail/check", { method: "POST" });
-    set({ digests: [r.digest, ...state.digests].slice(0, 14) });
-    return r.digest.items.length ? `${r.digest.items.length}件のメールが届いています` : "新しいメールはありません";
+    const r = await api<{ result: Record<string, string> }>("/api/mail/check", { method: "POST" });
+    await loadMail();
+    const bad = Object.entries(r.result).filter(([, v]) => v !== "ok").map(([k]) => SLOT_LABEL[k as Slot]);
+    return bad.length ? `${bad.join("・")}は読み込めませんでした` : "更新しました";
   } catch (e) {
-    if (e instanceof ApiError && e.status === 409) {
-      if (state.account) set({ account: { ...state.account, status: "expired" } });
-      return "Gmailの接続が切れています";
-    }
     if (e instanceof ApiError && e.status === 429) return "少し待ってからもう一度押してください";
-    return "チェックできませんでした";
+    return "更新できませんでした";
   } finally {
     set({ checking: false });
   }
 }
 
-export async function markSeen(id: string) {
-  const d = state.digests.find((x) => x.id === id);
-  if (!d || d.seen_at) return;
-  set({ digests: state.digests.map((x) => (x.id === id ? { ...x, seen_at: Date.now() } : x)) });
-  try { await api(`/api/mail/digests/${id}/seen`, { method: "POST" }); } catch { /* 次回また既読にする */ }
+/** Flick の中だけの既読・未読（メールサービス側は変えない） */
+export async function setRead(item: MailItem, read: boolean) {
+  set({ items: state.items.map((m) => (m.slot === item.slot && m.id === item.id ? { ...m, read } : m)) });
+  try {
+    await api(`/api/mail/items/${item.slot}/${encodeURIComponent(item.id)}/read`, { method: "POST", body: { read } });
+  } catch {
+    /* 次に開いたときに戻るだけ */
+  }
 }
 
-export async function disconnectMail() {
-  await api("/api/mail", { method: "DELETE" });
-  set({ account: null, digests: [] });
+export function markOpened() {
+  const now = Date.now();
+  try { localStorage.setItem(OPENED, String(now)); } catch { /* noop */ }
+  set({ openedAt: now });
 }
 
-export const connectMail = () => { location.href = "/api/mail/connect"; };
+export async function disconnectSlot(slot: Slot) {
+  await api(`/api/mail/${slot}`, { method: "DELETE" });
+  set({ sources: state.sources.filter((s) => s.slot !== slot), items: state.items.filter((m) => m.slot !== slot) });
+}
 
-/** 次の自動チェック（10:00 / 18:00） */
-export function nextCheckLabel(now = new Date()) {
+export const connectSlot = (slot: Slot) => { location.href = `/api/mail/connect/${slot}`; };
+
+/** 前に開いてから届いた未読（一覧の上のお知らせ用） */
+export const newUnread = (s: Pick<State, "items" | "openedAt">) => s.items.filter((m) => !m.read && m.date > s.openedAt);
+
+const hm = (d: Date) => `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+/** 次の自動更新（10:00 / 20:00） */
+export function nextUpdateLabel(now = new Date()) {
   const h = now.getHours();
   if (h < 10) return "今日 10:00";
-  if (h < 18) return "今日 18:00";
+  if (h < 20) return "今日 20:00";
   return "明日 10:00";
 }
 
-const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
-/** 「今日 18:00」「昨日 10:00」「11/5(木) 18:00」 */
-export function digestLabel(ms: number, now = new Date()) {
+export function dayTimeLabel(ms: number, now = new Date()) {
   const d = new Date(ms);
   const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((day(now) - day(d)) / 86_400_000);
-  const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-  if (diff === 0) return `今日 ${hm}`;
-  if (diff === 1) return `昨日 ${hm}`;
-  return `${d.getMonth() + 1}/${d.getDate()}(${WEEK[d.getDay()]}) ${hm}`;
+  if (diff === 0) return `今日 ${hm(d)}`;
+  if (diff === 1) return `昨日 ${hm(d)}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm(d)}`;
 }
 
-export function timeLabel(ms: number, now = new Date()) {
+/** 一覧の時刻（今日なら時刻、それ以外は日付） */
+export function listTime(ms: number, now = new Date()) {
   const d = new Date(ms);
-  const sameDay = d.toDateString() === now.toDateString();
-  const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+  if (d.toDateString() === now.toDateString()) return hm(d);
+  const y = new Date(now); y.setDate(y.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return "昨日";
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/** Gmail で開くリンク（大学・iCloud から転送されたメールも Gmail にある） */
-export const gmailLink = (threadId: string, email?: string) =>
-  `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(email ?? "")}#all/${threadId}`;
+export function fullTime(ms: number) {
+  const d = new Date(ms);
+  const w = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+  return `${d.getMonth() + 1}月${d.getDate()}日(${w}) ${hm(d)}`;
+}

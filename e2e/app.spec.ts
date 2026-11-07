@@ -552,11 +552,14 @@ test.describe("Google 認証", () => {
     expect((await anon.post("/api/auth/dev-login", { headers: { origin: "https://evil.example" } })).status()).toBe(403);
     expect((await anon.put("/api/tasks/00000000-0000-4000-8000-000000000000", { data: { title: "x" } })).status()).toBe(403);
     await anon.dispose();
-    // ログイン確認はメソッドに関係なく /api 全体にかかる。ローカルのテストサーバー（Miniflare）は
-    // 未ログインの POST でまれに接続が切れて 500 を返すことがあるため、AI の確認は GET で行う
+    // ログイン確認はメソッドに関係なく /api 全体にかかる。
+    // ローカルのテストサーバー（vite preview → Miniflare）は、まれにアプリに届く前に 500 を返すことがある
+    // （アプリのコードはログインなしでは DB にも触らず 401 を返すだけ）。その場合だけ 1 回やり直す
     const anon2 = await playwright.request.newContext({ baseURL: ORIGIN });
     for (const path of ["/api/ai/plan", "/api/ai/transcribe", "/api/ai/enrich"]) {
-      expect((await anon2.get(path)).status(), path).toBe(401);
+      let st = (await anon2.get(path)).status();
+      if (st === 500) st = (await anon2.get(path)).status();
+      expect(st, path).toBe(401);
     }
     await anon2.dispose();
   });

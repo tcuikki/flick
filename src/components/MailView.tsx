@@ -1,71 +1,51 @@
-import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useDragControls, useMotionValue, useTransform } from "motion/react";
 import {
-  type Digest, type MailItem, type MailKind, type MailSource, SOURCE_LABEL,
-  checkMailNow, connectMail, digestLabel, disconnectMail, gmailLink, markSeen, nextCheckLabel, timeLabel, useMail,
+  type MailItem, type Slot, SLOTS, SLOT_LABEL,
+  connectSlot, dayTimeLabel, disconnectSlot, fullTime, listTime, markOpened, nextUpdateLabel, refreshMailNow, setRead, useMail,
 } from "../mail";
 import { addPlanned } from "../store";
 import { dueLabel } from "../date";
 import { haptic } from "../haptics";
 import { strangeKanji } from "../kanji";
-import { ChevronLeft, ChevronRight, MailIcon, Refresh, Sparkle } from "./Icons";
+import { Check, ChevronLeft, MailIcon, Refresh, Sparkle } from "./Icons";
 
 type Props = { open: boolean; onClose: () => void; toast: (text: string) => void };
-type Source = MailSource;
 
-const KIND_LABEL: Record<MailKind, string> = { action: "要対応", check: "確認", info: "お知らせ", ad: "広告・SNS" };
-const KIND_ORDER: MailKind[] = ["action", "check", "info", "ad"];
+const SWIPE = 80;
 
-export const countBy = (d: Digest) => ({
-  gmail: d.items.filter((m) => m.source === "gmail").length,
-  univ: d.items.filter((m) => m.source === "univ").length,
-  icloud: d.items.filter((m) => m.source === "icloud").length,
-  action: d.items.filter((m) => m.kind === "action").length,
-});
-
-/** 表示する枠：Gmail と大学はいつも、iCloud は届いたときだけ */
-export const sourcesOf = (d: Digest): Source[] => (countBy(d).icloud > 0 ? ["gmail", "univ", "icloud"] : ["gmail", "univ"]);
-
-/** お知らせ用の短い件数（例「Gmail 8・大学 3」） */
-export const sourceSummary = (d: Digest) => {
-  const c = countBy(d);
-  return sourcesOf(d).map((s) => `${SOURCE_LABEL[s]} ${c[s]}`).join("・");
-};
-
-/** メールの枠（未着手・進行中・完了とは別）。10:00 / 18:00 のまとめを Gmail / iCloud に分けて見せる */
+/** メールの枠（未着手・進行中・完了とは別）。個人・事業・大学の受信箱を新着順に、未読・既読つきで見せる */
 export function MailView({ open, onClose, toast }: Props) {
-  const account = useMail((s) => s.account);
-  const digests = useMail((s) => s.digests);
+  const sources = useMail((s) => s.sources);
+  const items = useMail((s) => s.items);
   const checking = useMail((s) => s.checking);
-  const [sel, setSel] = useState<string | null>(null);
-  const [source, setSource] = useState<Source>("gmail");
-
-  const digest = digests.find((d) => d.id === sel) ?? digests[0] ?? null;
+  const outlookReady = useMail((s) => s.outlookReady);
+  const [slot, setSlot] = useState<Slot>("personal");
+  const [detail, setDetail] = useState<MailItem | null>(null);
+  const detailRef = useRef<MailItem | null>(null);
+  detailRef.current = detail;
 
   useEffect(() => {
     if (!open) return;
-    setSel(null);
+    // 未読があるところを最初に開く
+    const first = SLOTS.find((s) => items.some((m) => m.slot === s && !m.read)) ?? SLOTS.find((s) => sources.some((x) => x.slot === s)) ?? "personal";
+    setSlot(first);
     document.documentElement.classList.add("mail-open");
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // 中身を開いているときの Esc は中身だけ閉じる（最新の状態を ref で見る）
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && (detailRef.current ? setDetail(null) : onClose());
     window.addEventListener("keydown", onKey);
     return () => {
       document.documentElement.classList.remove("mail-open");
       window.removeEventListener("keydown", onKey);
+      markOpened(); // 閉じたら「見た」ことにして、一覧の上のお知らせを消す
     };
-  }, [open, onClose]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 開いている間に表示したまとめは既読にする（一覧のお知らせが消える）
-  useEffect(() => {
-    if (open && digest && !digest.seen_at) void markSeen(digest.id);
-  }, [open, digest]);
-
-  // 要対応があるところ → 届いているところ の順で最初に見せる
-  useEffect(() => {
-    if (!digest) return;
-    const list = sourcesOf(digest);
-    const has = (s: Source, k?: MailKind) => digest.items.some((m) => m.source === s && (!k || m.kind === k));
-    setSource(list.find((s) => has(s, "action")) ?? list.find((s) => has(s)) ?? "gmail");
-  }, [digest?.id]);
+  const src = sources.find((s) => s.slot === slot) ?? null;
+  const list = items.filter((m) => m.slot === slot).sort((a, b) => b.date - a.date);
+  const unread = (s: Slot) => items.filter((m) => m.slot === s && !m.read).length;
+  const lastUpdate = Math.max(0, ...sources.map((s) => s.checked_at ?? 0));
 
   return (
     <AnimatePresence>
@@ -87,16 +67,18 @@ export function MailView({ open, onClose, toast }: Props) {
             </motion.button>
             <div className="mail-head-text">
               <h2>メール</h2>
-              <span>{account?.status === "ok" ? `次の自動チェック ${nextCheckLabel()}` : "Gmail・iCloud"}</span>
+              <span data-testid="mail-updated">
+                {lastUpdate ? `${dayTimeLabel(lastUpdate)} に更新・次は ${nextUpdateLabel()}` : `毎日 10:00 と 20:00 に更新`}
+              </span>
             </div>
-            {account?.status === "ok" && (
+            {sources.length > 0 && (
               <motion.button
                 className={`mail-refresh ${checking ? "spin" : ""}`}
                 whileTap={{ scale: 0.88 }}
                 disabled={checking}
-                aria-label="今すぐチェック"
+                aria-label="今すぐ更新"
                 data-testid="mail-check"
-                onClick={async () => { haptic("light"); toast(await checkMailNow()); setSel(null); }}
+                onClick={async () => { haptic("light"); toast(await refreshMailNow()); }}
               >
                 <Refresh size={19} />
               </motion.button>
@@ -104,216 +86,246 @@ export function MailView({ open, onClose, toast }: Props) {
           </header>
 
           <div className="mail-body">
-            {!account && <Connect />}
-            {account?.status === "expired" && <Expired />}
-            {account?.status === "ok" && !digest && (
-              <div className="mail-empty" data-testid="mail-nodigest">
-                <p>まだチェックしていません。</p>
-                <p className="sub">右上の ↻ を押すと、今すぐ24時間分のメールをまとめます。</p>
-              </div>
+            <div className="seg mail-seg" role="tablist" aria-label="メールの種類">
+              {SLOTS.map((s) => (
+                <button key={s} role="tab" aria-selected={slot === s} className={`seg-btn ${slot === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSlot(s); }}>
+                  {slot === s && <motion.span layoutId="mail-seg-pill" className={`seg-pill src-${s}`} transition={{ type: "spring", stiffness: 520, damping: 34 }} />}
+                  <span>
+                    {SLOT_LABEL[s]}
+                    {unread(s) > 0 && <b className="tab-unread" data-testid={`mail-unread-${s}`}>{unread(s)}</b>}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {!src && <ConnectCard slot={slot} ready={slot !== "univ" || outlookReady} />}
+            {src?.status === "expired" && <ExpiredCard slot={slot} />}
+            {src?.status === "ok" && (
+              <>
+                <div className="mail-count" data-testid="mail-count">
+                  <b>未読 {unread(slot)}件</b>
+                  <span>受信箱の新しい{list.length}件</span>
+                </div>
+                {list.length === 0 && <div className="mail-empty" data-testid="mail-none">まだメールを読み込んでいません。右上の ↻ で今すぐ更新できます。</div>}
+                {list.length > 0 && (
+                  <ul className="mail-list" data-testid="mail-list">
+                    <AnimatePresence initial={false}>
+                      {list.map((m, i) => (
+                        <MailRow key={m.id} m={m} i={i} onOpen={() => { setDetail(m); if (!m.read) void setRead(m, true); }} />
+                      ))}
+                    </AnimatePresence>
+                  </ul>
+                )}
+                <p className="mail-hint">左右にスワイプで 既読 ⇄ 未読。Flick の中だけで変わり、{slot === "univ" ? "Outlook" : "Gmail"} の既読は変えません。</p>
+              </>
             )}
-            {account && digest && (
-              <DigestView key={digest.id} digest={digest} digests={digests} onPick={setSel} source={source} setSource={setSource} email={account.email} toast={toast} />
-            )}
-            {account && (
+            {src && (
               <button
                 className="mail-disconnect"
                 data-testid="mail-disconnect"
                 onClick={async () => {
-                  if (!window.confirm("Gmailとの接続を解除しますか？（まとめも消えます）")) return;
-                  await disconnectMail();
+                  if (!window.confirm(`${SLOT_LABEL[slot]}（${src.email}）との接続を解除しますか？`)) return;
+                  await disconnectSlot(slot);
                   toast("接続を解除しました");
                 }}
               >
-                Gmailとの接続を解除（{account.email}）
+                {SLOT_LABEL[slot]}：{src.email} の接続を解除
               </button>
             )}
           </div>
+
+          <MailDetail item={detail} onClose={() => setDetail(null)} toast={toast} />
         </motion.section>
       )}
     </AnimatePresence>
   );
 }
 
-function Connect() {
+const CONNECT: Record<Slot, { title: string; body: string; button: string }> = {
+  personal: { title: "個人のGmailをつなぐ", body: "ふだん使っているGmailのアカウントを選んでください。", button: "個人のGmailをつなぐ" },
+  business: { title: "事業（AIHP）のGmailをつなぐ", body: "Googleの画面で、AIHPで使っているアカウントを選んでください。", button: "事業のGmailをつなぐ" },
+  univ: { title: "大学のOutlookをつなぐ", body: "Microsoftの画面で、大学のアカウントでログインしてください。転送はしません。", button: "大学のOutlookをつなぐ" },
+};
+
+function ConnectCard({ slot, ready }: { slot: Slot; ready: boolean }) {
+  const t = CONNECT[slot];
   return (
-    <div className="mail-connect" data-testid="mail-connect-card">
-      <motion.div className="mail-hero-icon" initial={{ scale: 0.6, rotate: -8 }} animate={{ scale: 1, rotate: 0 }} transition={{ type: "spring", stiffness: 300, damping: 16 }}>
-        <MailIcon size={38} />
+    <div className="mail-connect" data-testid={`mail-connect-card-${slot}`}>
+      <motion.div className={`mail-hero-icon src-${slot}`} initial={{ scale: 0.6, rotate: -8 }} animate={{ scale: 1, rotate: 0 }} transition={{ type: "spring", stiffness: 300, damping: 16 }}>
+        <MailIcon size={34} />
       </motion.div>
-      <h3>毎日 10:00 と 18:00 に、届いたメールをまとめます</h3>
-      <p>Gmail・大学・iCloud に分けて、AI が「何のメールか」と「やること」を出します。メールは読むだけで、送信や削除はしません。</p>
-      <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={connectMail} data-testid="mail-connect">
-        Gmailをつなぐ
-      </motion.button>
-      <div className="mail-howto">
-        <strong>大学（Outlook）のメールも見るには</strong>
-        <ol>
-          <li>outlook.office.com に大学のアカウントでログインする</li>
-          <li>設定（歯車）→「メール」→「転送」で「転送を有効にする」をオンにし、このGmailのアドレスを入れる</li>
-          <li>「転送されたメッセージのコピーを保持する」にチェックを入れて保存する</li>
-        </ol>
-      </div>
-      <div className="mail-howto">
-        <strong>iCloud のメールも見るには</strong>
-        <ol>
-          <li>パソコンで iCloud.com を開き、「メール」を開く</li>
-          <li>設定（歯車）→「転送」で、このGmailのアドレスへの転送をオンにする</li>
-          <li>転送されたメールは、宛先を見て自動で「大学」「iCloud」に分けて表示します</li>
-        </ol>
-      </div>
+      <h3>{t.title}</h3>
+      <p>{t.body}</p>
+      <p className="sub">毎日 10:00 と 20:00 に、受信箱の新しいメールを読み込みます。読むだけで、送信・削除・既読の変更はしません。</p>
+      {ready ? (
+        <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-connect">
+          {t.button}
+        </motion.button>
+      ) : (
+        <div className="mail-notready" data-testid="mail-notready">
+          大学のOutlookを読むには、先にMicrosoft側の準備（アプリ登録）が必要です。準備ができると、ここに「つなぐ」ボタンが出ます。
+        </div>
+      )}
     </div>
   );
 }
 
-function Expired() {
+function ExpiredCard({ slot }: { slot: Slot }) {
   return (
     <div className="mail-expired" data-testid="mail-expired">
-      <h3>Gmailとの接続が切れました</h3>
-      <p>Google のアプリが「テスト中」のあいだは、7日ごとにつなぎ直しが必要です。</p>
-      <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={connectMail} data-testid="mail-reconnect">
+      <h3>{SLOT_LABEL[slot]}との接続が切れました</h3>
+      <p>{slot === "univ" ? "大学のアカウントで、もう一度ログインしてください。" : "Googleのアプリが「テスト中」のあいだは、7日ごとにつなぎ直しが必要です。"}</p>
+      <motion.button className="primary-btn" whileTap={{ scale: 0.96 }} onClick={() => connectSlot(slot)} data-testid="mail-reconnect">
         つなぎ直す
       </motion.button>
     </div>
   );
 }
 
-type DigestProps = {
-  digest: Digest; digests: Digest[]; onPick: (id: string) => void;
-  source: Source; setSource: (s: Source) => void; email: string; toast: (t: string) => void;
-};
-
-function DigestView({ digest, digests, onPick, source, setSource, email, toast }: DigestProps) {
-  const c = countBy(digest);
-  const items = digest.items.filter((m) => m.source === source);
-  const ids = new Set(items.map((m) => m.id));
-  const tasks = digest.tasks.filter((t) => ids.has(t.mailId));
-  const sourceText = useMemo(() => digest.items.map((m) => `${m.fromName} ${m.subject} ${m.summary} ${m.snippet ?? ""}`).join(" "), [digest]);
-  const [picked, setPicked] = useState<Set<number>>(() => new Set(tasks.map((_, i) => i)));
-  const [added, setAdded] = useState(false);
-  const [showAds, setShowAds] = useState(false);
-  useEffect(() => { setPicked(new Set(tasks.map((_, i) => i))); setAdded(false); }, [source]);
-
-  const groups = KIND_ORDER.map((k) => ({ kind: k, list: items.filter((m) => m.kind === k) })).filter((g) => g.list.length);
-
+/** 1通。左右にスワイプで既読・未読、タップで中身 */
+function MailRow({ m, i, onOpen }: { m: MailItem; i: number; onOpen: () => void }) {
+  const x = useMotionValue(0);
+  const bgOpacity = useTransform(x, [-SWIPE, -20, 0, 20, SWIPE], [1, 0.4, 0, 0.4, 1]);
+  const [armed, setArmed] = useState(false);
+  const dragged = useRef(false); // スワイプした直後のタップ扱いを防ぐ
   return (
-    <>
-      {digests.length > 1 && (
-        <div className="digest-chips" role="tablist" aria-label="チェックした時間">
-          {digests.map((d) => (
-            <button key={d.id} role="tab" aria-selected={d.id === digest.id} className={`chip ${d.id === digest.id ? "on" : ""}`} onClick={() => { haptic(); onPick(d.id); }}>
-              {digestLabel(d.created_at)}
-              {!d.seen_at && <i className="chip-dot" />}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <motion.div className="digest-hero" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} data-testid="digest-hero">
-        <div className="digest-when">{digestLabel(digest.created_at)} のメール</div>
-        <div className="digest-count">
-          <b>{digest.items.length}</b>件
-          {c.action > 0 && <span className="pill-action">要対応 {c.action}</span>}
-        </div>
-        {digest.total > digest.items.length && <div className="digest-more">ほか {digest.total - digest.items.length} 件は Gmail で確認してください</div>}
+    <motion.li
+      className="mail-li"
+      data-testid="mail-row"
+      data-read={m.read ? "1" : "0"}
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ delay: Math.min(i, 10) * 0.025 }}
+    >
+      <motion.div className={`mail-swipe-bg ${m.read ? "to-unread" : "to-read"} ${armed ? "armed" : ""}`} style={{ opacity: bgOpacity }} aria-hidden="true">
+        <span>{m.read ? "未読にする" : "既読にする"}</span>
+        <span>{m.read ? "未読にする" : "既読にする"}</span>
       </motion.div>
-
-      <div className={`seg ${sourcesOf(digest).length === 3 ? "" : "seg-2"} mail-seg`} role="tablist" aria-label="メールの種類">
-        {sourcesOf(digest).map((s) => (
-          <button key={s} role="tab" aria-selected={source === s} className={`seg-btn ${source === s ? "on" : ""}`} data-testid={`mail-tab-${s}`} onClick={() => { haptic(); setSource(s); }}>
-            {source === s && <motion.span layoutId="mail-seg-pill" className={`seg-pill src-${s}`} transition={{ type: "spring", stiffness: 520, damping: 34 }} />}
-            <span>{SOURCE_LABEL[s]} {c[s]}</span>
-          </button>
-        ))}
-      </div>
-
-      {tasks.length > 0 && (
-        <motion.div className="mail-tasks" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} data-testid="mail-tasks">
-          <div className="mail-tasks-head"><Sparkle size={15} /> やることの案</div>
-          <ul>
-            {tasks.map((t, i) => {
-              const odd = strangeKanji(t.title, sourceText);
-              return (
-                <li key={i} className={picked.has(i) && !added ? "" : "off"}>
-                  <input
-                    type="checkbox"
-                    className="plan-check"
-                    checked={picked.has(i)}
-                    disabled={added}
-                    aria-label="このタスクを追加する"
-                    onChange={(e) => setPicked((p) => { const n = new Set(p); e.target.checked ? n.add(i) : n.delete(i); return n; })}
-                  />
-                  <div className="plan-body">
-                    <div className="mail-task-title">{t.title}</div>
-                    <div className="plan-meta">
-                      {t.due_date && <span className="plan-due">{dueLabel(t.due_date).text}</span>}
-                      {odd.length > 0 && <span className="plan-warn">字を確認：{odd.join("")}</span>}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          <motion.button
-            className="primary-btn"
-            disabled={added || picked.size === 0}
-            whileTap={{ scale: 0.96 }}
-            data-testid="mail-add-tasks"
-            onClick={() => {
-              const chosen = tasks.filter((_, i) => picked.has(i)).map(({ mailId, ...t }) => t);
-              addPlanned(chosen);
-              haptic("success");
-              setAdded(true);
-              toast(`${chosen.length}件を未着手に追加しました`);
-            }}
-          >
-            {added ? "追加しました" : `${picked.size}件をタスクに追加`}
-          </motion.button>
-        </motion.div>
-      )}
-
-      {items.length === 0 && <div className="mail-empty" data-testid="mail-none">この時間に届いた{SOURCE_LABEL[source]}のメールはありません</div>}
-
-      {groups.map((g) => (
-        <section key={g.kind} className="mail-group" data-testid={`mail-group-${g.kind}`}>
-          {g.kind === "ad" ? (
-            <button className="mail-group-head as-btn" onClick={() => setShowAds((v) => !v)} data-testid="mail-ads-toggle">
-              <i className={`kind-dot k-${g.kind}`} />{KIND_LABEL[g.kind]} {g.list.length}件
-              <ChevronRight size={14} className={`ads-chev ${showAds ? "open" : ""}`} />
-            </button>
-          ) : (
-            <div className="mail-group-head"><i className={`kind-dot k-${g.kind}`} />{KIND_LABEL[g.kind]} {g.list.length}件</div>
-          )}
-          <AnimatePresence initial={false}>
-            {(g.kind !== "ad" || showAds) && (
-              <motion.ul
-                className="mail-list"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ type: "spring", stiffness: 380, damping: 36 }}
-              >
-                {g.list.map((m, i) => <MailRow key={m.id} m={m} i={i} email={email} />)}
-              </motion.ul>
-            )}
-          </AnimatePresence>
-        </section>
-      ))}
-    </>
+      <motion.button
+        className={`mail-row ${m.read ? "" : "unread"}`}
+        style={{ x, touchAction: "pan-y" }}
+        drag="x"
+        dragConstraints={{ left: 0, right: 0 }}
+        dragElastic={0.55}
+        dragDirectionLock
+        onDragStart={() => { dragged.current = true; }}
+        onDrag={(_, info) => {
+          const a = Math.abs(info.offset.x) > SWIPE;
+          if (a !== armed) { setArmed(a); if (a) haptic("light"); }
+        }}
+        onDragEnd={(_, info) => {
+          setArmed(false);
+          if (Math.abs(info.offset.x) > SWIPE || Math.abs(info.velocity.x) > 700) { haptic(); void setRead(m, !m.read); }
+          setTimeout(() => { dragged.current = false; }, 0);
+        }}
+        onClick={() => { if (!dragged.current) { haptic("light"); onOpen(); } }}
+      >
+        <i className="unread-dot" aria-label={m.read ? "既読" : "未読"} />
+        <div className="mail-row-body">
+          <div className="mail-row-top">
+            <span className="mail-from">{m.from_name}</span>
+            <span className="mail-time">{listTime(m.date)}</span>
+          </div>
+          <div className="mail-subject">{m.subject}</div>
+          <div className="mail-summary">{m.summary || m.snippet}</div>
+          {m.task_title && <span className="mail-task-chip"><Sparkle size={11} /> やることあり</span>}
+        </div>
+      </motion.button>
+    </motion.li>
   );
 }
 
-function MailRow({ m, i, email }: { m: MailItem; i: number; email: string }) {
-  return (
-    <motion.li initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i, 8) * 0.03 }}>
-      <a className={`mail-row ${m.unread ? "unread" : ""}`} href={gmailLink(m.threadId, email)} target="_blank" rel="noreferrer" data-testid="mail-row">
-        <div className="mail-row-top">
-          <span className="mail-from">{m.fromName}</span>
-          <span className="mail-time">{timeLabel(m.date)}</span>
-        </div>
-        <div className="mail-subject">{m.subject}</div>
-        <div className="mail-summary">{m.summary}</div>
-      </a>
-    </motion.li>
+/** アプリの中で中身を見る（外のサイトへ飛ばない） */
+function MailDetail({ item, onClose, toast }: { item: MailItem | null; onClose: () => void; toast: (t: string) => void }) {
+  const live = useMail((s) => (item ? s.items.find((m) => m.slot === item.slot && m.id === item.id) ?? item : null));
+  const drag = useDragControls();
+  const [added, setAdded] = useState(false);
+  useEffect(() => setAdded(false), [item?.id]);
+  const m = live;
+  const title = m ? m.task_title ?? m.subject : "";
+  const odd = m?.task_title ? strangeKanji(m.task_title, `${m.from_name} ${m.subject} ${m.snippet} ${m.summary}`) : [];
+
+  // メール画面は横から動く（transform がある）ので、その中に置くと位置がずれる。body の直下に出す
+  return createPortal(
+    <AnimatePresence>
+      {m && (
+        <>
+          <motion.div key="scrim" className="scrim mail-detail-scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+          <motion.section
+            key="sheet"
+            className="sheet glass mail-detail"
+            role="dialog"
+            aria-label="メールの中身"
+            data-testid="mail-detail"
+            drag="y"
+            dragControls={drag}
+            dragListener={false}
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={{ top: 0.04, bottom: 0.7 }}
+            onDragEnd={(_, i) => (i.offset.y > 110 || i.velocity.y > 650) && onClose()}
+            initial={{ y: "100%" }}
+            animate={{ y: 0 }}
+            exit={{ y: "105%" }}
+            transition={{ type: "spring", stiffness: 380, damping: 36 }}
+          >
+            <div className="grabber-zone" onPointerDown={(e) => drag.start(e)}><div className="grabber" /></div>
+            <div className="mail-detail-from">
+              <strong>{m.from_name}</strong>
+              <span>{m.from_addr}</span>
+              <span>{fullTime(m.date)}</span>
+            </div>
+            <h3 className="mail-detail-subject">{m.subject}</h3>
+            {m.summary && (
+              <div className="mail-detail-box ai" data-testid="mail-detail-summary">
+                <div className="mail-detail-label"><Sparkle size={13} /> AIの説明</div>
+                <p>{m.summary}</p>
+              </div>
+            )}
+            <div className="mail-detail-box" data-testid="mail-detail-snippet">
+              <div className="mail-detail-label">メールの冒頭</div>
+              <p>{m.snippet || "（本文なし）"}</p>
+            </div>
+            <div className="mail-detail-task">
+              <div className="mail-detail-label">タスクにするなら</div>
+              <div className="mail-task-title">{title}</div>
+              <div className="plan-meta">
+                {m.task_due && <span className="plan-due">{dueLabel(m.task_due).text}</span>}
+                {odd.length > 0 && <span className="plan-warn">字を確認：{odd.join("")}</span>}
+              </div>
+            </div>
+            <div className="sheet-actions">
+              <motion.button
+                className="ghost-btn"
+                whileTap={{ scale: 0.96 }}
+                data-testid="mail-toggle-read"
+                onClick={() => { haptic(); void setRead(m, !m.read); if (m.read) onClose(); }}
+              >
+                {m.read ? "未読に戻す" : "既読にする"}
+              </motion.button>
+              <motion.button
+                className="primary-btn"
+                disabled={added}
+                whileTap={{ scale: 0.96 }}
+                data-testid="mail-to-task"
+                onClick={() => {
+                  addPlanned([{ title, due_date: m.task_due, status: "todo", note: `✉ ${m.from_name}「${m.subject}」` }]);
+                  haptic("success");
+                  setAdded(true);
+                  toast("未着手に追加しました");
+                }}
+              >
+                {added ? <><Check size={16} /> 追加しました</> : "タスクにする"}
+              </motion.button>
+            </div>
+            <a className="mail-open-original" href={m.link} target="_blank" rel="noreferrer" data-testid="mail-open-original">
+              {m.slot === "univ" ? "Outlook" : "Gmail"}で全文を開く
+            </a>
+          </motion.section>
+        </>
+      )}
+    </AnimatePresence>,
+    document.body,
   );
 }

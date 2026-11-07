@@ -10,7 +10,7 @@
 - **AI（Workers AI）** — 「明日までに資料作成」→ タスク名「資料作成」+ 期限「明日」に自動整理（AI には期限の言葉と日付だけを答えさせ、タスク名は打った文から期限の言葉を取り除いて作るので、文字が書き換わらない）。
 - **AIに頼む（音声）** — ＋ の左のマイクボタンから、今の状況を話す（または書く）と、Whisper（`@cf/openai/whisper-large-v3-turbo`）で文字にし、AI がタスク・期限・状態に分けて提案。**提案は一覧で確かめてから追加**（チェックを外す・名前や期限を直すことができる）。AI が元の文に無い漢字を書いた場合は「字を確認」の目印を出す（以前起きた字化け対策）。
 - **完了ボタン** — 詳細シートの下に「完了」（完了済みなら「未着手に戻す」）。
-- **メール（Gmail・iCloud）** — 未着手・進行中・完了とは別の枠。毎日 **10:00 と 18:00（日本時間）** に Cron で Gmail を読み（`gmail.readonly`・読むだけ）、AI が「何のメールか」と「要対応／確認／お知らせ／広告」の分類、「やることの案」を作る。届くと一覧の上にお知らせが出る。大学（Outlook / Microsoft 365）と iCloud のメールは Gmail へ転送してもらい、宛先で「大学」（@tcu.ac.jp）と「iCloud」（@icloud.com / @me.com / @mac.com）に分ける（iCloud の枠は届いたときだけ出る）。本文は読まず、差出人・件名・冒頭の一部だけを使う。Google のリフレッシュトークンは AES-GCM で暗号化して D1 に保存。
+- **メール（個人・事業・大学）** — 未着手・進行中・完了とは別の枠（右上の ✉）。個人・事業は Gmail（`gmail.readonly`）、大学は Outlook を Microsoft Graph（`Mail.Read`）で**転送せずに直接**読む。毎日 **10:00 と 20:00（日本時間）** に各枠の受信箱の新しい30件を読み込み、新着順に未読・既読つきで表示（既読・未読は左右スワイプ。Flick の中だけで持ち、メールサービス側は変えない）。押すとアプリの中で「AIの説明」と「メールの冒頭」を出し、そこから「タスクにする」。新しく来たメールだけ AI に説明を書かせる。本文は読まず、差出人・件名・日時・冒頭だけを使う。トークンは AES-GCM で暗号化して D1 に保存。
 - **ログインは Google のみ**。
 - **オフライン** — 端末内に保存して楽観的に更新し、復帰したら同期（後勝ち）。
 
@@ -56,11 +56,11 @@ API（すべて同一オリジン、書き込みは Origin 検証あり）
 | POST | `/api/ai/enrich` | メモ → タスク名 + 期限 |
 | POST | `/api/ai/plan` | 話した状況 → タスク案の一覧（追加はしない） |
 | POST | `/api/ai/transcribe` | 録音（音声ファイルそのまま）→ 文字（Whisper） |
-| GET | `/api/mail/connect` | Gmail（読むだけ）の許可を求める（既存のリダイレクト URI を使う） |
-| GET | `/api/mail` | 接続状態と、最近のまとめ（最大14回分） |
-| POST | `/api/mail/check` | 今すぐチェック（1分に1回まで） |
-| POST | `/api/mail/digests/:id/seen` | まとめを既読にする |
-| DELETE | `/api/mail` | 接続を解除し、まとめも消す |
+| GET | `/api/mail/connect/:slot` | 個人・事業 = Google、大学 = Microsoft のログインへ（読むだけの権限） |
+| GET | `/api/mail` | つないでいる枠と、受信箱のメール（新着順） |
+| POST | `/api/mail/check` | 今すぐ更新（1分に1回まで） |
+| POST | `/api/mail/items/:slot/:id/read` | Flick の中の既読・未読 |
+| DELETE | `/api/mail/:slot` | その枠の接続を解除し、メールも消す |
 
 ## ローカルで動かす
 
@@ -120,11 +120,21 @@ npm test           # 本番ビルドを workerd で起動し、iPhone 15 Pro 相
 
 - Apple Human Interface Guidelines — [Materials](https://developer.apple.com/design/human-interface-guidelines/materials)（Liquid Glass はコントロール/ナビゲーション層に限定、コンテンツ層には使わない、regular バリアントで可読性を確保、控えめに使う）
 
-## メール機能の準備（Google Cloud）
+## メール機能の準備
 
-1. Google Cloud Console（プロジェクト `flick`）で **Gmail API を有効にする**（API とサービス → ライブラリ → Gmail API → 有効にする）。
-2. Flick の右上の ✉ →「Gmailをつなぐ」。Google の画面で「Gmail のメールの表示」に**チェックを入れて**許可する。
-3. 大学のメールも見る場合は、outlook.office.com → 設定 → メール →「転送」で「転送を有効にする」をオンにして Gmail のアドレスを入れ、「転送されたメッセージのコピーを保持する」にチェックする。大学の設定で外部への自動転送が止められている場合は、転送の確認メールが届かない（その場合は Microsoft Graph で直接読む方式を検討する）。
-4. iCloud のメールも見る場合は、iCloud.com → メール → 設定 →「転送」で Gmail のアドレスへ転送する。
+### 個人・事業（Gmail）
+1. Google Cloud Console（プロジェクト `flick`）で **Gmail API を有効にする**。
+2. 事業用など別の Google アカウントもつなぐ場合は、Google Auth Platform →「対象」→「テストユーザー」にそのアカウントを追加する。
+3. Flick の ✉ → 枠を選んで「つなぐ」。Google の画面で「Gmail のメールの表示」に**チェックを入れて**許可する。
 
-Google Auth Platform の公開ステータスが「テスト中」のあいだは、Google の決まりで**7日ごとに許可が切れる**。切れたら ✉ に橙色の印が付き、「つなぎ直す」から再接続できる。
+Google Auth Platform が「テスト中」のあいだは、Google の決まりで**7日ごとに許可が切れる**。切れたら ✉ に橙色の印が付き、その枠に「つなぎ直す」が出る。
+
+### 大学（Outlook / Microsoft 365）
+1. https://entra.microsoft.com に大学のアカウントでサインイン →「アプリの登録」→「新規登録」。
+   - 名前：`Flick`／アカウントの種類：**この組織ディレクトリのみ（シングル テナント）**
+   - リダイレクト URI：プラットフォーム「Web」、`https://flick.<サブドメイン>.workers.dev/api/auth/microsoft/callback`
+2. 「アプリケーション (クライアント) ID」→ GitHub Secrets の `MS_CLIENT_ID`。
+3. 「証明書とシークレット」→「新しいクライアント シークレット」の**値** → GitHub Secrets の `MS_CLIENT_SECRET`。
+4. 「API のアクセス許可」→ Microsoft Graph →「委任されたアクセス許可」で `Mail.Read` と `offline_access` を追加（`User.Read` は最初からある）。
+5. Actions で再デプロイ（シークレットが Worker に入る）→ Flick の ✉ →「大学」→「大学のOutlookをつなぐ」。
+6. 大学のテナントが別のドメインなら `wrangler.jsonc` の `MS_TENANT` を変える。大学の設定で利用者の同意が止められていると「管理者の承認が必要」と出る（その場合は大学の承認が必要）。

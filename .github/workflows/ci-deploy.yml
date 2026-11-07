@@ -71,6 +71,13 @@ jobs:
         run: |
           if [ -n "$GOOGLE_CLIENT_ID" ]; then printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID; fi
           if [ -n "$GOOGLE_CLIENT_SECRET" ]; then printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET; fi
+      - name: Sync Microsoft (Outlook) secrets
+        env:
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+        run: |
+          if [ -n "$MS_CLIENT_ID" ]; then printf '%s' "$MS_CLIENT_ID" | npx wrangler secret put MS_CLIENT_ID; fi
+          if [ -n "$MS_CLIENT_SECRET" ]; then printf '%s' "$MS_CLIENT_SECRET" | npx wrangler secret put MS_CLIENT_SECRET; fi
       - name: Smoke test
         run: |
           URL="https://flick.${{ secrets.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev"
