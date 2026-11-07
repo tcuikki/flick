@@ -15,3 +15,15 @@ export function primeKeyboard() {
   }
   try { el.focus({ preventScroll: true }); } catch { /* noop */ }
 }
+
+/**
+ * iPhone ではキーボードが画面の上に重なるだけで、画面の高さは変わらない。
+ * キーボードを除いた「実際に見えている高さ」を --vvh に入れておき、上から出るシートの最大の高さに使う。
+ */
+export function trackVisibleHeight() {
+  const vv = window.visualViewport;
+  const set = () => document.documentElement.style.setProperty("--vvh", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
+  set();
+  vv?.addEventListener("resize", set);
+  window.addEventListener("resize", set);
+}

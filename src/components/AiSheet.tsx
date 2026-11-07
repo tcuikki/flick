@@ -145,7 +145,7 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
           <motion.div key="scrim" className="scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => !busy && onClose()} />
           <motion.section
             key="sheet"
-            className="sheet glass ai-sheet"
+            className="sheet sheet-top glass ai-sheet"
             role="dialog"
             aria-modal="true"
             aria-label="AIに頼む"
@@ -154,16 +154,13 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
             dragControls={drag}
             dragListener={false}
             dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={{ top: 0.04, bottom: 0.7 }}
-            onDragEnd={(_, i) => !busy && (i.offset.y > 110 || i.velocity.y > 650) && onClose()}
-            initial={{ y: "100%", scale: 0.98 }}
+            dragElastic={{ top: 0.7, bottom: 0.04 }}
+            onDragEnd={(_, i) => !busy && (i.offset.y < -90 || i.velocity.y < -650) && onClose()}
+            initial={{ y: "-105%", scale: 0.98 }}
             animate={{ y: 0, scale: 1 }}
-            exit={{ y: "105%", scale: 0.98 }}
+            exit={{ y: "-110%", scale: 0.98 }}
             transition={{ type: "spring", stiffness: 380, damping: 36, mass: 0.9 }}
           >
-            <div className="grabber-zone" onPointerDown={(e) => drag.start(e)}>
-              <div className="grabber" />
-            </div>
 
             <div className="ai-head">
               <Sparkle size={18} className="ai-head-icon" />
@@ -175,7 +172,7 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
                 <textarea
                   ref={textRef}
                   className="sheet-note ai-text"
-                  rows={5}
+                  rows={3}
                   value={text}
                   placeholder="例：明日の10時から面接があるので、その前に企業研究をしたい。レポートは今書いている途中で、金曜までに出す"
                   aria-label="状況"
@@ -184,6 +181,13 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
                   onChange={(e) => setText(e.target.value)}
                 />
 
+                <div className="ai-status" aria-live="polite" data-testid="ai-status">
+                  {phase === "recording" && <>聞いています… {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}（もう一度押すと止まります）</>}
+                  {phase === "transcribing" && "文字にしています…"}
+                  {phase === "thinking" && "タスクに分けています…"}
+                  {phase === "input" && !error && "マイクを押して話すか、文字で書いてください"}
+                  {phase === "input" && error && <span className="ai-error">{error}</span>}
+                </div>
                 <div className="ai-controls">
                   <motion.button
                     type="button"
@@ -197,26 +201,18 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
                     {phase === "recording" && <span className="mic-pulse" aria-hidden="true" />}
                     {phase === "recording" ? <Stop size={22} /> : <Mic size={24} />}
                   </motion.button>
-                  <div className="ai-status" aria-live="polite" data-testid="ai-status">
-                    {phase === "recording" && <>聞いています… {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, "0")}（もう一度押すと止まります）</>}
-                    {phase === "transcribing" && "文字にしています…"}
-                    {phase === "thinking" && "タスクに分けています…"}
-                    {phase === "input" && !error && "マイクを押して話すか、文字で書いてください"}
-                    {phase === "input" && error && <span className="ai-error">{error}</span>}
-                  </div>
+                  <motion.button
+                    type="button"
+                    className={`ai-btn ${busy ? "busy" : ""}`}
+                    disabled={!text.trim() || phase !== "input"}
+                    whileTap={{ scale: 0.96 }}
+                    data-testid="ai-plan"
+                    onClick={think}
+                  >
+                    <Sparkle size={17} />
+                    <span>{phase === "thinking" ? "考えています…" : "タスクにする"}</span>
+                  </motion.button>
                 </div>
-
-                <motion.button
-                  type="button"
-                  className={`ai-btn ${busy ? "busy" : ""}`}
-                  disabled={!text.trim() || phase !== "input"}
-                  whileTap={{ scale: 0.96 }}
-                  data-testid="ai-plan"
-                  onClick={think}
-                >
-                  <Sparkle size={17} />
-                  <span>{phase === "thinking" ? "考えています…" : "タスクにする"}</span>
-                </motion.button>
               </>
             ) : (
               <>
@@ -281,6 +277,9 @@ export function AiSheet({ open, onClose, onAdded }: Props) {
                 </div>
               </>
             )}
+            <div className="grabber-zone bottom" onPointerDown={(e) => drag.start(e)}>
+              <div className="grabber" />
+            </div>
           </motion.section>
         </>
       )}

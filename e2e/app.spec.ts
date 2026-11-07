@@ -58,6 +58,65 @@ test.describe("＋ボタンで追加", () => {
       .toMatchObject({ title: "企業研究をする", status: "doing", due_date: isoDate(1), note: "面接の前に" });
   });
 
+  test("追加シートは上から出て、iPhone のキーボードと重ならない位置に収まる", async ({ page }) => {
+    await login(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("add").tap();
+    const sheet = page.getByTestId("new-sheet");
+    await expect(sheet).toBeVisible();
+    await page.waitForTimeout(600);
+    const vp = page.viewportSize()!;
+    const box = (await sheet.boundingBox())!;
+    expect(box.y).toBeLessThan(80); // 画面の上端から出る
+    // iPhone 15 Pro の日本語キーボード（予測変換の帯を含めて約 380px）が出ても、やること欄・追加ボタン・メモまで見える
+    for (const id of ["new-title", "new-add", "new-note"]) {
+      const b = (await page.getByTestId(id).boundingBox())!;
+      expect(b.y + b.height, id).toBeLessThan(vp.height - 380);
+    }
+
+    // キーボードで見える高さが狭くなったら、シートもその高さに収まり、中をスクロールできる
+    await page.evaluate(() => document.documentElement.style.setProperty("--vvh", "200px"));
+    const small = (await sheet.boundingBox())!;
+    expect(small.y + small.height).toBeLessThanOrEqual(200);
+    expect(await sheet.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  });
+
+  test("追加シートは上へスワイプで閉じる", async ({ page }) => {
+    await login(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("add").tap();
+    await expect(page.getByTestId("new-sheet")).toBeVisible();
+    await page.waitForTimeout(600);
+    const b = (await page.locator(".grabber-zone.bottom").boundingBox())!;
+    const cdp = await page.context().newCDPSession(page);
+    const x = b.x + b.width / 2;
+    let y = b.y + b.height / 2;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let i = 0; i < 10; i++) {
+      y -= 30;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+      await page.waitForTimeout(14);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.getByTestId("new-sheet")).toHaveCount(0);
+  });
+
+  test("AI のシートも上から出る", async ({ page }) => {
+    await login(page);
+    await page.goto("/");
+    await ready(page);
+    await page.getByTestId("ai-open").tap();
+    await page.waitForTimeout(600);
+    expect((await page.getByTestId("ai-sheet").boundingBox())!.y).toBeLessThan(80);
+    // 文字で打つとき（キーボード約 380px）も、マイクと「タスクにする」が隠れない
+    for (const id of ["ai-text", "mic", "ai-plan"]) {
+      const b = (await page.getByTestId(id).boundingBox())!;
+      expect(b.y + b.height, id).toBeLessThan(page.viewportSize()!.height - 380);
+    }
+  });
+
   test("期限を選んだときは、打った文をそのまま使う（AI で書き換えない）", async ({ page }) => {
     await login(page);
     await page.goto("/");
@@ -492,11 +551,13 @@ test.describe("Google 認証", () => {
     expect((await anon.get("/api/me")).status()).toBe(401);
     expect((await anon.post("/api/auth/dev-login", { headers: { origin: "https://evil.example" } })).status()).toBe(403);
     expect((await anon.put("/api/tasks/00000000-0000-4000-8000-000000000000", { data: { title: "x" } })).status()).toBe(403);
-    // ログイン確認は本文を読む前に行う。ローカルのテストサーバー（Miniflare）は、本文を読まずに返すと
-    // まれに接続が切れて 500 になるため、ここでは本文なしで送る
-    expect((await anon.post("/api/ai/plan", { headers: { origin: ORIGIN } })).status()).toBe(401);
-    expect((await anon.post("/api/ai/transcribe", { headers: { origin: ORIGIN } })).status()).toBe(401);
     await anon.dispose();
+    // ローカルのテストサーバー（Miniflare）は、本文を読まずに 403 を返した直後の接続を使い回すと
+    // まれに接続が切れて 500 になる。AI の確認は新しい接続で、本文なしで送る
+    const anon2 = await playwright.request.newContext({ baseURL: ORIGIN });
+    expect((await anon2.post("/api/ai/plan", { headers: { origin: ORIGIN } })).status()).toBe(401);
+    expect((await anon2.post("/api/ai/transcribe", { headers: { origin: ORIGIN } })).status()).toBe(401);
+    await anon2.dispose();
   });
 
   test("他人のタスクは読めず、上書きもできない", async ({ page, playwright }) => {

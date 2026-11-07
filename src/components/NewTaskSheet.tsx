@@ -66,7 +66,7 @@ export function NewTaskSheet({ open, defaultStatus, onClose, onAdded }: Props) {
           <motion.div key="scrim" className="scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
           <motion.section
             key="sheet"
-            className="sheet glass"
+            className="sheet sheet-top glass"
             role="dialog"
             aria-modal="true"
             aria-label="タスクを追加"
@@ -75,16 +75,13 @@ export function NewTaskSheet({ open, defaultStatus, onClose, onAdded }: Props) {
             dragControls={drag}
             dragListener={false}
             dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={{ top: 0.04, bottom: 0.7 }}
-            onDragEnd={(_, i) => (i.offset.y > 110 || i.velocity.y > 650) && onClose()}
-            initial={{ y: "100%", scale: 0.98 }}
+            dragElastic={{ top: 0.7, bottom: 0.04 }}
+            onDragEnd={(_, i) => (i.offset.y < -90 || i.velocity.y < -650) && onClose()}
+            initial={{ y: "-105%", scale: 0.98 }}
             animate={{ y: 0, scale: 1 }}
-            exit={{ y: "105%", scale: 0.98 }}
+            exit={{ y: "-110%", scale: 0.98 }}
             transition={{ type: "spring", stiffness: 380, damping: 36, mass: 0.9 }}
           >
-            <div className="grabber-zone" onPointerDown={(e) => drag.start(e)}>
-              <div className="grabber" />
-            </div>
 
             <div className="seg seg-2" role="radiogroup" aria-label="状態">
               {STATUS_CHOICES.map((s) => (
@@ -128,38 +125,48 @@ export function NewTaskSheet({ open, defaultStatus, onClose, onAdded }: Props) {
               className="new-form"
               onSubmit={(e) => { e.preventDefault(); submit(); }}
             >
-              <input
-                ref={titleRef}
-                className="new-title"
-                type="text"
-                value={title}
-                placeholder="やること"
-                aria-label="やること"
-                enterKeyHint="done"
-                maxLength={500}
-                autoComplete="off"
-                data-testid="new-title"
-                onChange={(e) => setTitle(e.target.value)}
-              />
+              <div className="new-row">
+                <input
+                  ref={titleRef}
+                  className="new-title"
+                  type="text"
+                  value={title}
+                  placeholder="やること"
+                  aria-label="やること"
+                  enterKeyHint="done"
+                  maxLength={500}
+                  autoComplete="off"
+                  data-testid="new-title"
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+                <motion.button
+                  type="submit"
+                  className="new-add"
+                  disabled={!canAdd}
+                  whileTap={canAdd ? { scale: 0.92 } : undefined}
+                  data-testid="new-add"
+                >
+                  追加
+                </motion.button>
+              </div>
               <textarea
-                className="sheet-note"
+                className="sheet-note new-note"
                 placeholder="メモ（なくてもOK）"
                 value={note}
-                rows={2}
+                rows={1}
                 aria-label="メモ"
                 data-testid="new-note"
-                onChange={(e) => setNote(e.target.value)}
+                onChange={(e) => {
+                  setNote(e.target.value);
+                  const el = e.target;
+                  el.style.height = "auto";
+                  el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+                }}
               />
-              <motion.button
-                type="submit"
-                className="primary-btn"
-                disabled={!canAdd}
-                whileTap={canAdd ? { scale: 0.96 } : undefined}
-                data-testid="new-add"
-              >
-                追加
-              </motion.button>
             </form>
+            <div className="grabber-zone bottom" onPointerDown={(e) => drag.start(e)}>
+              <div className="grabber" />
+            </div>
           </motion.section>
         </>
       )}
