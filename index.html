@@ -15,7 +15,7 @@
     <title>Flick</title>
     <!--
       クリティカル CSS はインラインにして、JS を待たずに
-      「スケルトン」と「メモ入力欄」を最初のペイントで出す。
+      「全画面スケルトン」を最初のペイントで出す。
     -->
     <style>
       :root {
@@ -29,7 +29,6 @@
         --glass-shadow: 0 10px 34px rgba(17, 24, 39, 0.1), 0 1px 3px rgba(17, 24, 39, 0.08);
         --safe-b: env(safe-area-inset-bottom, 0px);
         --safe-t: env(safe-area-inset-top, 0px);
-        --kb: 0px;
         --tabs-h: 58px;
         --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
       }
@@ -70,22 +69,6 @@
         .glass { background: rgba(250, 250, 252, 0.97); -webkit-backdrop-filter: none; backdrop-filter: none; }
       }
 
-      /* メモ入力欄（React より前から生きている。React はこの DOM をそのまま引き継ぐ） */
-      #composer {
-        position: fixed; z-index: 40; left: 12px; right: 12px;
-        bottom: calc(var(--kb) + var(--safe-b) + var(--tabs-h) + 22px);
-        height: 52px; border-radius: 26px; display: flex; align-items: center; gap: 6px;
-        padding: 0 6px 0 18px; margin: 0 auto; max-width: 620px;
-        transition: bottom 0.28s cubic-bezier(0.2, 0.9, 0.25, 1), transform 0.35s cubic-bezier(0.2, 0.9, 0.25, 1);
-      }
-      #composer:focus-within { transform: scale(1.015); }
-      #compose-input {
-        flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent;
-        font: 400 17px/1 var(--font); color: var(--ink); letter-spacing: -0.01em;
-      }
-      #compose-input::placeholder { color: var(--ink-3); }
-      #composer-slot { display: flex; align-items: center; }
-
       /* 全画面スケルトン */
       #boot { position: fixed; inset: 0; z-index: 30; pointer-events: none; transition: opacity 0.45s ease, filter 0.45s ease; }
       #boot.hide { opacity: 0; filter: blur(8px); }
@@ -95,7 +78,8 @@
       .sk-head { display: flex; align-items: flex-end; justify-content: space-between; height: 92px; padding-bottom: 12px; }
       .sk-card { display: flex; gap: 14px; align-items: center; height: 74px; padding: 0 16px; margin-bottom: 10px; border-radius: 22px; background: rgba(255, 255, 255, 0.75); box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05); }
       .sk-tabs { position: fixed; left: 12px; right: 12px; bottom: calc(var(--safe-b) + 12px); height: var(--tabs-h); border-radius: 29px; max-width: 620px; margin: 0 auto; display: flex; align-items: center; justify-content: space-around; padding: 0 18px; }
-      @media (prefers-reduced-motion: reduce) { .sk { animation: none; } #composer { transition: none; } }
+      .sk-fab { position: fixed; width: 58px; height: 58px; border-radius: 50%; right: max(16px, calc((100vw - 620px) / 2 + 4px)); bottom: calc(var(--safe-b) + 12px + var(--tabs-h) + 16px); }
+      @media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
     </style>
   </head>
   <body>
@@ -119,52 +103,9 @@
       <div class="sk-tabs glass">
         <div class="sk" style="width: 64px; height: 14px"></div><div class="sk" style="width: 64px; height: 14px"></div><div class="sk" style="width: 64px; height: 14px"></div>
       </div>
+      <div class="sk sk-fab"></div>
     </div>
 
-    <form id="composer" class="glass" autocomplete="off" data-testid="composer">
-      <input id="compose-input" name="memo" type="text" placeholder="メモ" aria-label="メモを入力"
-        enterkeyhint="send" maxlength="500" autocomplete="off" autocorrect="on" autofocus data-testid="compose-input" />
-      <div id="composer-slot"></div>
-    </form>
-
-    <script>
-      // JS バンドルの読み込みを待たずにメモを受け付けるためのブートスクリプト。
-      // React が起動したら window.__flickAdd を差し替え、溜まったメモを取り込む。
-      (function () {
-        var form = document.getElementById("composer");
-        var input = document.getElementById("compose-input");
-        var Q = "flick:boot-queue", D = "flick:draft";
-        try { input.value = localStorage.getItem(D) || ""; } catch (e) {}
-        window.__flickQueue = (function () { try { return JSON.parse(localStorage.getItem(Q) || "[]"); } catch (e) { return []; } })();
-        form.addEventListener("submit", function (e) {
-          e.preventDefault();
-          var v = input.value.trim();
-          if (!v) return;
-          input.value = "";
-          try { localStorage.removeItem(D); } catch (e) {}
-          if (window.__flickAdd) return window.__flickAdd(v);
-          window.__flickQueue.push({ text: v, at: Date.now() });
-          try { localStorage.setItem(Q, JSON.stringify(window.__flickQueue)); } catch (e) {}
-          form.animate && form.animate([{ transform: "scale(0.97)" }, { transform: "scale(1)" }], { duration: 260, easing: "cubic-bezier(.2,.9,.25,1.2)" });
-        });
-        input.addEventListener("input", function () { try { localStorage.setItem(D, input.value); } catch (e) {} });
-        // iOS のソフトウェアキーボードぶん入力欄を持ち上げる
-        var vv = window.visualViewport;
-        if (vv) {
-          var fit = function () {
-            var kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-            document.documentElement.style.setProperty("--kb", (kb > 60 ? kb - (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--safe-b")) || 0) - 64 : 0) + "px");
-          };
-          vv.addEventListener("resize", fit); vv.addEventListener("scroll", fit); fit();
-        }
-        // 入力欄のハイライトを指の位置に追従させる
-        form.addEventListener("pointermove", function (e) {
-          var r = form.getBoundingClientRect();
-          form.style.setProperty("--mx", ((e.clientX - r.left) / r.width) * 100 + "%");
-        });
-        if (!("ontouchstart" in window)) try { input.focus({ preventScroll: true }); } catch (e) {}
-      })();
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

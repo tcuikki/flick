@@ -1,22 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { AnimatePresence, motion, useDragControls } from "motion/react";
 import { STATUSES, STATUS_LABEL, type Task, updateTask, useStore } from "../store";
 import { addDaysISO, dueLabel } from "../date";
-import { Sparkle, Trash } from "./Icons";
+import { Check, Undo, Trash } from "./Icons";
 import { haptic } from "../haptics";
 
 type Props = {
   taskId: string | null;
   onClose: () => void;
   onDelete: (t: Task) => void;
-  onBreakdown: (t: Task) => Promise<void>;
+  onComplete: (t: Task) => void;
 };
 
-export function TaskSheet({ taskId, onClose, onDelete, onBreakdown }: Props) {
+export function TaskSheet({ taskId, onClose, onDelete, onComplete }: Props) {
   const task = useStore((s) => s.tasks.find((t) => t.id === taskId) ?? null);
-  const aiOn = useStore((s) => s.auth === "in");
   const drag = useDragControls();
-  const [busy, setBusy] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -138,21 +136,15 @@ export function TaskSheet({ taskId, onClose, onDelete, onBreakdown }: Props) {
             />
 
             <div className="sheet-actions">
-              {aiOn && (
-                <motion.button
-                  className={`ai-btn ${busy ? "busy" : ""}`}
-                  whileTap={{ scale: 0.95 }}
-                  disabled={busy}
-                  data-testid="breakdown"
-                  onClick={async () => {
-                    setBusy(true);
-                    try { await onBreakdown(task); } finally { setBusy(false); }
-                  }}
-                >
-                  <Sparkle size={17} />
-                  <span>{busy ? "分解中…" : "AIで分解"}</span>
-                </motion.button>
-              )}
+              <motion.button
+                className={`done-btn ${task.status === "done" ? "undo" : ""}`}
+                whileTap={{ scale: 0.95 }}
+                data-testid="complete"
+                onClick={() => onComplete(task)}
+              >
+                {task.status === "done" ? <Undo size={18} /> : <Check size={18} />}
+                <span>{task.status === "done" ? "未着手に戻す" : "完了"}</span>
+              </motion.button>
               <motion.button className="del-btn" whileTap={{ scale: 0.95 }} aria-label="削除" data-testid="delete" onClick={() => onDelete(task)}>
                 <Trash size={19} />
               </motion.button>

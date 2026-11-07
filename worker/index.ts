@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { Google, generateState, generateCodeVerifier, decodeIdToken } from "arctic";
-import { enrichMemo, breakdownTask } from "./ai";
+import { enrichMemo, planTasks, transcribe } from "./ai";
 
 export type Env = {
   DB: D1Database;
@@ -250,11 +250,32 @@ app.post("/ai/enrich", async (c) => {
   return c.json(await enrichMemo(c.env, text, today));
 });
 
-app.post("/ai/breakdown", async (c) => {
-  const b = await c.req.json<{ title?: string; note?: string }>().catch(() => ({}) as any);
-  const title = String(b.title ?? "").trim().slice(0, 500);
-  if (!title) return c.json({ error: "title_required" }, 400);
-  return c.json(await breakdownTask(c.env, title, String(b.note ?? "").slice(0, 2000)));
+app.post("/ai/plan", async (c) => {
+  const b = await c.req.json<{ text?: string; today?: string }>().catch(() => ({}) as any);
+  const text = String(b.text ?? "").trim().slice(0, 3000);
+  const today = DATE.test(String(b.today)) ? String(b.today) : new Date().toISOString().slice(0, 10);
+  if (!text) return c.json({ error: "text_required" }, 400);
+  try {
+    return c.json(await planTasks(c.env, text, today));
+  } catch (e) {
+    console.warn("plan failed", e);
+    return c.json({ error: "ai_failed" }, 502);
+  }
+});
+
+const MAX_AUDIO = 8 * 1024 * 1024;
+app.post("/ai/transcribe", async (c) => {
+  const len = Number(c.req.header("content-length") || 0);
+  if (len > MAX_AUDIO) return c.json({ error: "too_large" }, 413);
+  const audio = await c.req.arrayBuffer();
+  if (!audio.byteLength) return c.json({ error: "audio_required" }, 400);
+  if (audio.byteLength > MAX_AUDIO) return c.json({ error: "too_large" }, 413);
+  try {
+    return c.json(await transcribe(c.env, audio));
+  } catch (e) {
+    console.warn("transcribe failed", e);
+    return c.json({ error: "ai_failed" }, 502);
+  }
 });
 
 app.notFound((c) => c.json({ error: "not_found" }, 404));

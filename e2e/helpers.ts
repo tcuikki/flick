@@ -15,11 +15,15 @@ export async function ready(page: Page) {
   await expect(page.getByTestId("skeleton")).toHaveCount(0, { timeout: 8000 });
 }
 
+/** ＋ボタン → やることを打って Enter（状態・期限は既定のまま） */
 export async function addMemo(page: Page, text: string) {
-  const input = page.getByTestId("compose-input");
+  await page.getByTestId("add").tap();
+  const sheet = page.getByTestId("new-sheet");
+  await expect(sheet).toBeVisible();
+  const input = page.getByTestId("new-title");
   await input.fill(text);
   await input.press("Enter");
-  await expect(input).toHaveValue("");
+  await expect(sheet).toHaveCount(0);
 }
 
 export const card = (page: Page, title: string) => page.locator(`[data-testid=task][data-title="${title}"]`);

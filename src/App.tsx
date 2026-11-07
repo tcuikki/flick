@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, MotionConfig, motion, useScroll, useTransform } from "motion/react";
 import {
   STATUS_LABEL, type Status, type Task,
-  addTask, breakdown, deleteTask, drainBootQueue, login, logout, restoreTask, setAiEnabled, setStatus, useStore,
+  deleteTask, drainBootQueue, login, logout, restoreTask, setAiEnabled, setStatus, useStore,
 } from "./store";
 import { headerDate } from "./date";
 import { haptic } from "./haptics";
 import { TaskCard } from "./components/TaskCard";
 import { TaskSheet } from "./components/TaskSheet";
 import { Tabs } from "./components/Tabs";
-import { ArrowUp, Google, Sparkle, Tray, Wifi } from "./components/Icons";
+import { NewTaskSheet } from "./components/NewTaskSheet";
+import { AiSheet } from "./components/AiSheet";
+import { primeKeyboard } from "./focus";
+import { Google, Mic, Plus, Sparkle, Tray, Wifi } from "./components/Icons";
 
 type Toast = { id: number; text: string; undo?: () => void };
 const MIN_SKELETON_MS = 450;
@@ -30,6 +32,8 @@ export function App() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [menu, setMenu] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   const setTab = useCallback((s: Status) => {
     setTabState((cur) => {
@@ -61,21 +65,40 @@ export function App() {
     return () => clearTimeout(t);
   }, [ready, booted]);
 
-  /* ---------- 静的 HTML の入力欄を引き継ぐ ---------- */
-  useEffect(() => {
-    const w = window as any;
-    w.__flickAdd = (text: string) => {
-      addTask(text);
-      haptic("light");
+  /* ---------- 追加（＋ボタン / AI） ---------- */
+  const openAdd = useCallback(() => {
+    primeKeyboard();
+    haptic("light");
+    setAdding(true);
+  }, []);
+  const closeAdd = useCallback(() => setAdding(false), []);
+  const closeAsk = useCallback(() => setAsking(false), []);
+
+  const onAdded = useCallback(
+    (s: Status) => {
+      setAdding(false);
+      setTab(s);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [setTab],
+  );
+  const onAiAdded = useCallback(
+    (n: number) => {
+      setAsking(false);
       setTab("todo");
       window.scrollTo({ top: 0, behavior: "smooth" });
-    };
+      showToast(`${n}件追加しました`);
+    },
+    [setTab, showToast],
+  );
+
+  useEffect(() => {
     drainBootQueue();
     const onKey = (e: KeyboardEvent) => {
       const el = document.activeElement as HTMLElement | null;
-      if (e.key === "/" && !(el && /INPUT|TEXTAREA/.test(el.tagName))) {
+      if ((e.key === "/" || e.key === "n") && !(el && /INPUT|TEXTAREA/.test(el.tagName)) && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        document.getElementById("compose-input")?.focus();
+        setAdding(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -84,11 +107,8 @@ export function App() {
       showToast("ログインできませんでした");
       history.replaceState(null, "", "/");
     }
-    return () => {
-      w.__flickAdd = undefined;
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [setTab, showToast]);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showToast]);
 
   /* ---------- 一覧 ---------- */
   const counts = useMemo(() => {
@@ -130,21 +150,13 @@ export function App() {
     setTimeout(() => setStatus(t.id, to), 380);
   }, []);
 
-  const onBreakdown = useCallback(
-    async (t: Task) => {
-      try {
-        const created = await breakdown(t);
-        if (!created.length) return showToast("分解できませんでした");
-        haptic("success");
-        setOpenId(null);
-        setTab("todo");
-        showToast(`${created.length}件追加しました`);
-      } catch {
-        showToast("AIに接続できませんでした");
-      }
-    },
-    [setTab, showToast],
-  );
+  const onComplete = useCallback((t: Task) => {
+    const to: Status = t.status === "done" ? "todo" : "done";
+    haptic(to === "done" ? "success" : "light");
+    setOpenId(null);
+    setStatus(t.id, to);
+    showToast(to === "done" ? "完了にしました" : "未着手に戻しました");
+  }, [showToast]);
 
   /* ---------- ヘッダーのスクロール演出（大きなタイトル → 縮小 + スクロールエッジ） ---------- */
   const { scrollY } = useScroll();
@@ -155,8 +167,6 @@ export function App() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <ComposerSendButton />
-
       <motion.div className="scroll-edge top" style={{ opacity: edgeOpacity }} aria-hidden="true" />
       <div className="scroll-edge bottom" aria-hidden="true" />
 
@@ -288,7 +298,40 @@ export function App() {
 
       {booted && auth !== "out" && <Tabs value={tab} counts={counts} onChange={setTab} />}
 
-      <TaskSheet taskId={openId} onClose={() => setOpenId(null)} onDelete={handleDelete} onBreakdown={onBreakdown} />
+      {booted && auth === "in" && (
+        <div className="fabs">
+          <motion.button
+            className="fab-ai glass"
+            aria-label="AIに頼む"
+            data-testid="ai-open"
+            disabled={!online}
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: online ? 1 : 0.45 }}
+            whileTap={{ scale: 0.88 }}
+            transition={{ type: "spring", stiffness: 520, damping: 26, delay: 0.12 }}
+            onClick={() => { haptic("light"); setAsking(true); }}
+          >
+            <Mic size={21} />
+            <Sparkle size={11} className="fab-ai-spark" />
+          </motion.button>
+          <motion.button
+            className="fab"
+            aria-label="タスクを追加"
+            data-testid="add"
+            initial={{ scale: 0, rotate: -90, opacity: 0 }}
+            animate={{ scale: 1, rotate: 0, opacity: 1 }}
+            whileTap={{ scale: 0.88 }}
+            transition={{ type: "spring", stiffness: 520, damping: 24, delay: 0.06 }}
+            onClick={openAdd}
+          >
+            <Plus size={26} />
+          </motion.button>
+        </div>
+      )}
+
+      <TaskSheet taskId={openId} onClose={() => setOpenId(null)} onDelete={handleDelete} onComplete={onComplete} />
+      <NewTaskSheet open={adding} defaultStatus={tab} onClose={closeAdd} onAdded={onAdded} />
+      <AiSheet open={asking} onClose={closeAsk} onAdded={onAiAdded} />
 
       <AnimatePresence>
         {toast && (
@@ -310,48 +353,5 @@ export function App() {
         )}
       </AnimatePresence>
     </MotionConfig>
-  );
-}
-
-/** 静的 HTML の入力欄に、文字があるときだけ送信ボタンを出す（React Portal） */
-function ComposerSendButton() {
-  const [has, setHas] = useState(false);
-  const slot = useRef<HTMLElement | null>(document.getElementById("composer-slot"));
-  useEffect(() => {
-    const input = document.getElementById("compose-input") as HTMLInputElement | null;
-    if (!input) return;
-    const on = () => setHas(input.value.trim().length > 0);
-    on();
-    input.addEventListener("input", on);
-    // 送信後（ブートスクリプトが value を空にする）にも反映
-    const form = input.form;
-    const onSubmit = () => setTimeout(on, 0);
-    form?.addEventListener("submit", onSubmit);
-    return () => {
-      input.removeEventListener("input", on);
-      form?.removeEventListener("submit", onSubmit);
-    };
-  }, []);
-  if (!slot.current) return null;
-  return createPortal(
-    <AnimatePresence>
-      {has && (
-        <motion.button
-          type="submit"
-          className="send"
-          aria-label="追加"
-          data-testid="send"
-          initial={{ scale: 0, opacity: 0, rotate: -90 }}
-          animate={{ scale: 1, opacity: 1, rotate: 0 }}
-          exit={{ scale: 0, opacity: 0, rotate: 90 }}
-          whileTap={{ scale: 0.85 }}
-          transition={{ type: "spring", stiffness: 600, damping: 28 }}
-          onPointerDown={(e) => e.preventDefault() /* 入力欄のフォーカス（＝キーボード）を保つ */}
-        >
-          <ArrowUp size={18} />
-        </motion.button>
-      )}
-    </AnimatePresence>,
-    slot.current,
   );
 }

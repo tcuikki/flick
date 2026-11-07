@@ -183,18 +183,36 @@ async function enrich(id: string, original: string) {
   }
 }
 
-export async function breakdown(task: Task): Promise<Task[]> {
-  const r = await api<{ steps: string[] }>("/api/ai/breakdown", {
-    method: "POST",
-    body: { title: task.title, note: task.note },
-  });
+export type PlannedTask = { title: string; due_date: string | null; status: "todo" | "doing"; note: string };
+
+/** 話した状況 → タスク案（まだ追加しない。画面で確かめてから addPlanned で入れる） */
+export async function planWithAi(text: string): Promise<PlannedTask[]> {
+  const r = await api<{ tasks: PlannedTask[] }>("/api/ai/plan", { method: "POST", body: { text, today: todayISO() } });
+  return r.tasks ?? [];
+}
+
+/** 確かめたタスク案をまとめて追加（AI の再整理はしない） */
+export function addPlanned(list: PlannedTask[]): Task[] {
   const now = Date.now();
-  return r.steps
+  return list
     .slice()
     .reverse()
-    .map((step, i) =>
-      addTask(step, { title: step, note: `↳ ${task.title}`, due_date: task.due_date, sort: now + i, created_at: now + i, aiAt: now }),
+    .map((p, i) =>
+      addTask(p.title, { title: p.title.trim().slice(0, 500), note: p.note, status: p.status, due_date: p.due_date, sort: now + i, created_at: now + i, aiAt: now }),
     );
+}
+
+/** 録音 → 文字（Workers AI の Whisper） */
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const res = await fetch("/api/ai/transcribe", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": blob.type || "application/octet-stream" },
+    body: blob,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, (data as any)?.error ?? "error");
+  return String((data as any).text ?? "");
 }
 
 /* ---------- 認証 ---------- */
@@ -314,11 +332,13 @@ function handle401() {
   set({ auth: "out", user: null, ready: true });
 }
 
-/** ブートスクリプトが JS 読み込み前に受け付けたメモを取り込む */
+/** 以前の版の「JS 読み込み前に受け付けたメモ」が端末に残っていれば取り込む */
 export function drainBootQueue() {
-  const w = window as any;
-  const q: { text: string; at: number }[] = w.__flickQueue || [];
-  w.__flickQueue = [];
-  try { localStorage.removeItem("flick:boot-queue"); } catch { /* noop */ }
-  q.forEach((m) => addTask(m.text));
+  let q: { text: string; at: number }[] = [];
+  try {
+    q = JSON.parse(localStorage.getItem("flick:boot-queue") || "[]");
+    localStorage.removeItem("flick:boot-queue");
+    localStorage.removeItem("flick:draft");
+  } catch { /* noop */ }
+  q.forEach((m) => m?.text && addTask(m.text));
 }

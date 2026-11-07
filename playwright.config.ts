@@ -16,7 +16,12 @@ export default defineConfig({
     // Chromium で iPhone 15 Pro の画面サイズ・タッチ・UA・DPR をエミュレート
     ...iPhone,
     defaultBrowserType: "chromium",
-    launchOptions: process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {},
+    launchOptions: {
+      ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+      // マイクのテスト用：本物のマイクの代わりにテスト音を流す
+      args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
+    },
+    permissions: ["microphone"],
     serviceWorkers: "block",
     locale: "ja-JP",
     timezoneId: "Asia/Tokyo",

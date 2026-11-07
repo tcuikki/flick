@@ -42,3 +42,12 @@ export const Google = ({ size = 20 }: P) => (
     <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
   </svg>
 );
+export const Plus = ({ size, className }: P) => (
+  <svg {...base(size)} className={className} strokeWidth={2.6}><path d="M12 5v14M5 12h14" /></svg>
+);
+export const Mic = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}><rect x="9" y="3" width="6" height="11.5" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
+);
+export const Stop = ({ size, className }: P) => (
+  <svg {...base(size)} className={className} stroke="none" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" /></svg>
+);
